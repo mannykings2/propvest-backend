@@ -1,0 +1,22 @@
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: propvest_postgres
+    environment:
+      POSTGRES_USER: propvest
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: propvest
+    ports:
+      - "5435:5432"        # pgAdmin connects to localhost:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: propvest_redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
