@@ -36,7 +36,9 @@ func main() {
 	}
 
 	// ── 4. Create router ─────────────────────────────────────────────────
-	r := gin.Default()
+	r := gin.New()
+
+	r.Use(gin.Recovery())
 	// gin.Default() includes two built-in middlewares:
 	//   - Logger: prints every request (method, path, status, latency)
 	//   - Recovery: catches panics and returns 500 instead of crashing

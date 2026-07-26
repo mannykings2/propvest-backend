@@ -2,6 +2,7 @@ package database
 
 import (
 	"log"
+	"time"
 
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"gorm.io/driver/postgres"
@@ -30,9 +31,33 @@ func Connect(dsn string) {
 	}
 
 	log.Println("Database connection established")
+
+	// Get the underlying database/sql connection pool.
+	sqlDB, err := DB.DB()
+	if err != nil {
+		log.Fatalf("Failed to get underlying sql.DB: %v", err)
+	}
+
+	// Configure the connection pool.
+	//
+	// MaxOpenConns:
+	//   Maximum number of open connections to the database.
+	sqlDB.SetMaxOpenConns(25)
+
+	// MaxIdleConns:
+	//   Number of idle connections kept ready for future requests.
+	sqlDB.SetMaxIdleConns(10)
+
+	// ConnMaxLifetime:
+	//   Recycle connections after one hour to avoid stale connections.
+	sqlDB.SetConnMaxLifetime(time.Hour)
+
+	// ConnMaxIdleTime:
+	//   Close idle connections after 15 minutes.
+	sqlDB.SetConnMaxIdleTime(15 * time.Minute)
+
+	log.Println("Database connection pool configured")
 }
-
-
 
 // AutoMigrate compares the current model structs against the actual
 // database schema and adds any missing tables or columns.
