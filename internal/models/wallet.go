@@ -36,6 +36,11 @@ type Wallet struct {
 	VirtualAcctNo *string `json:"virtual_acct_no,omitempty"`
 	VirtualBank   *string `json:"virtual_bank,omitempty"`
 
+	// Currency tracks the wallet currency (NGN, USD, etc.)
+	// Defaults to NGN (Nigerian Naira) for all users
+	// Allows future multi-currency support without schema changes
+	Currency string `gorm:"default:'NGN';not null" json:"currency"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

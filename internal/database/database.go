@@ -1,11 +1,15 @@
 package database
 
 import (
+	"fmt"
 	"log"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/mannykings2/propvest-backend/internal/models"
-	"gorm.io/driver/postgres"
+	pgdriver "gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -19,7 +23,7 @@ var DB *gorm.DB
 func Connect(dsn string) {
 	var err error
 
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+	DB, err = gorm.Open(pgdriver.Open(dsn), &gorm.Config{
 		// In development, log every SQL query so you can see exactly
 		// what GORM is sending to the database. In production you would
 		// set this to logger.Silent or logger.Warn.
@@ -59,25 +63,102 @@ func Connect(dsn string) {
 	log.Println("Database connection pool configured")
 }
 
-// AutoMigrate compares the current model structs against the actual
-// database schema and adds any missing tables or columns.
+// RunMigrations executes all pending database migrations using golang-migrate.
+// This is the PRODUCTION approach — explicit, versioned SQL migrations with rollback support.
 //
-// CRITICAL RULES for AutoMigrate:
-//   1. It ONLY adds — it never drops columns or tables.
-//      Removing a field from the struct does NOT remove it from the DB.
-//   2. It is safe to run on every startup in development.
-//   3. In production, use explicit SQL migration files (golang-migrate)
-//      instead — AutoMigrate gives you less control and no rollback.
+// Why golang-migrate instead of AutoMigrate?
+//   1. Full control: You write exact SQL, no surprises
+//   2. Rollback support: Every migration has a .down.sql for reverting
+//   3. Version tracking: migrations_schema_version table tracks what's applied
+//   4. Team-friendly: Migrations are code-reviewed like any other code
+//   5. Production-safe: No magic behavior, explicit changes only
 //
-// Add every new model here as you build each Phase.
+// Migration files live in internal/database/migrations/
+// File naming: NNNNNN_description.up.sql and NNNNNN_description.down.sql
+//
+// How to create a new migration:
+//   migrate create -ext sql -dir internal/database/migrations -seq add_users_table
+//
+// This creates:
+//   000001_add_users_table.up.sql   ← your forward migration
+//   000001_add_users_table.down.sql ← your rollback migration
+func RunMigrations(databaseURL string) error {
+	// Get the underlying *sql.DB from GORM
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get database instance: %w", err)
+	}
+
+	// Create a postgres driver instance for golang-migrate
+	driver, err := postgres.WithInstance(sqlDB, &postgres.Config{})
+	if err != nil {
+		return fmt.Errorf("failed to create migrate driver: %w", err)
+	}
+
+	// Create the migration instance
+	// "file://..." tells migrate where to find migration files
+	m, err := migrate.NewWithDatabaseInstance(
+		"file://internal/database/migrations",
+		"postgres",
+		driver,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create migration instance: %w", err)
+	}
+
+	// Run all pending migrations
+	// migrate.Up() applies migrations in order: 000001, 000002, 000003...
+	// It's idempotent — safe to run multiple times
+	// Already-applied migrations are skipped automatically
+	log.Println("Running database migrations...")
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("migration failed: %w", err)
+	}
+
+	// Get current migration version for logging
+	version, dirty, err := m.Version()
+	if err != nil && err != migrate.ErrNilVersion {
+		return fmt.Errorf("failed to get migration version: %w", err)
+	}
+
+	if dirty {
+		log.Printf("WARNING: Database is in dirty state at version %d", version)
+		log.Println("This means a previous migration failed partway through")
+		log.Println("You may need to manually fix the database and force the version")
+		return fmt.Errorf("database is in dirty state")
+	}
+
+	log.Printf("Database migrations completed successfully (current version: %d)", version)
+	return nil
+}
+
+// AutoMigrate uses GORM's automatic migration feature.
+// This is ONLY for rapid prototyping — NOT for production.
+//
+// Why AutoMigrate is risky:
+//   1. No rollback: Can't undo what it did
+//   2. No version control: Can't track what changed when
+//   3. Only additive: Can add columns/tables but never removes them
+//   4. Magic behavior: GORM decides the SQL, not you
+//   5. Schema drift: Different developers might get different results
+//
+// We keep this function for DEVELOPMENT ONLY while building Milestone 0-1.
+// After Milestone 1, all schema changes MUST use RunMigrations() instead.
+//
+// DEPRECATED: Use RunMigrations() for all new development
 func AutoMigrate() {
+	log.Println("WARNING: AutoMigrate is deprecated — use RunMigrations() instead")
+	log.Println("AutoMigrate is for development only and will be removed before production")
+
 	err := DB.AutoMigrate(
 		&models.User{},
 		&models.Wallet{},
+		&models.WalletTransaction{},
+		&models.Property{},
 	)
 	if err != nil {
 		log.Fatalf("AutoMigrate failed: %v", err)
 	}
 
-	log.Println("Database migration completed")
+	log.Println("Database migration completed (via AutoMigrate)")
 }

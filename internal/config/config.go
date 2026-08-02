@@ -10,14 +10,15 @@ import (
 // We define it as a struct so that the rest of the app gets
 // type-safe access — cfg.Port instead of os.Getenv("PORT").
 type Config struct {
-	AppEnv          string `mapstructure:"APP_ENV"`
-	Port            string `mapstructure:"PORT"`
-	DatabaseURL     string `mapstructure:"DATABASE_URL"`
-	RedisURL        string `mapstructure:"REDIS_URL"`
-	JWTSecret       string `mapstructure:"JWT_SECRET"`
-	AccessTokenTTL  string `mapstructure:"ACCESS_TOKEN_TTL"`
-	RefreshTokenTTL string `mapstructure:"REFRESH_TOKEN_TTL"`
-	AllowedOrigins  string `mapstructure:"ALLOWED_ORIGINS"`
+	AppEnv             string `mapstructure:"APP_ENV"`
+	Port               string `mapstructure:"PORT"`
+	DatabaseURL        string `mapstructure:"DATABASE_URL"`
+	RedisURL           string `mapstructure:"REDIS_URL"`
+	JWTSecret          string `mapstructure:"JWT_SECRET"`
+	JWTRefreshSecret   string `mapstructure:"JWT_REFRESH_SECRET"`
+	AccessTokenTTL     string `mapstructure:"ACCESS_TOKEN_TTL"`
+	RefreshTokenTTL    string `mapstructure:"REFRESH_TOKEN_TTL"`
+	AllowedOrigins     string `mapstructure:"ALLOWED_ORIGINS"`
 }
 
 // Load reads the .env file and maps it into a Config struct.

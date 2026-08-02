@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: propvest
     ports:
-      - "5435:5432"        # pgAdmin connects to localhost:5432
+      - "5435:5432"        # Host port 5435 maps to container port 5432
     volumes:
       - pgdata:/var/lib/postgresql/data
 

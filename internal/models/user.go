@@ -37,11 +37,10 @@ type User struct {
 	// our application code has a bug and tries to insert one.
 	Email string `gorm:"uniqueIndex;not null" json:"email"`
 
-	// Phone has a pointer type (*string) meaning it is nullable.
-	// A plain string in Go is never nil — it defaults to "".
-	// A *string can be nil, which maps to NULL in PostgreSQL.
-	// We make phone optional at registration but unique if provided.
-	Phone *string `gorm:"uniqueIndex" json:"phone,omitempty"`
+	// Phone is required at registration and must be unique.
+	// We enforce Nigerian phone format validation in the DTO layer.
+	// Format: +234XXXXXXXXXX (E.164 format)
+	Phone string `gorm:"uniqueIndex;not null" json:"phone"`
 
 	// PasswordHash stores the bcrypt hash, never the plain password.
 	// json:"-" means this field is NEVER included in any JSON response,

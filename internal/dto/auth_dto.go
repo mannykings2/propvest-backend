@@ -24,10 +24,9 @@ type RegisterRequest struct {
 	// beyond 72 bytes. Setting the max here makes that behaviour explicit
 	// and prevents user confusion ("my 100-char password works but only
 	// the first 72 chars are checked").
-	Phone *string `json:"phone" binding:"omitempty,min=10,max=15" example:"+2348012345678"`
-	// Phone is optional (omitempty means: skip validation if not provided).
-	// *string (pointer) so we can distinguish "not provided" (nil)
-	// from "provided as empty string" ("").
+	Phone string `json:"phone" binding:"required,min=10,max=15" example:"+2348012345678"`
+	// Phone is required at registration and must be in E.164 format (+2348012345678).
+	// We validate Nigerian phone numbers specifically in the service layer.
 }
 
 // RegisterResponse is what the client receives after successful registration.
@@ -71,15 +70,17 @@ type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required" example:"eyJhbGci..."`
 }
 
-// RefreshResponse returns only a new access token.
-// We do NOT rotate the refresh token in Phase 1 for simplicity.
-// In production you would implement refresh token rotation:
-// every /refresh call invalidates the old refresh token and issues a new one,
-// making token theft detectable (if the stolen token is used, the legitimate
-// user's next refresh fails, alerting them to the breach).
+// RefreshResponse returns BOTH a new access token AND a new refresh token.
+// This implements refresh token rotation for security:
+//   - Every /refresh call invalidates the old refresh token
+//   - Issues a new refresh token
+//   - If someone steals a token, they can only use it once
+//   - If a stolen token is used, the legitimate user's next refresh fails,
+//     alerting them to the breach
 type RefreshResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"` // NEW refresh token (rotation)
+	TokenType    string `json:"token_type"`
 }
 
 // ─────────────────────────────────────────────

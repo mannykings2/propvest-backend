@@ -1,0 +1,434 @@
+{
+	"info": {
+		"_postman_id": "propvest-auth-collection",
+		"name": "PropVest API - Authentication",
+		"description": "Complete authentication endpoints for PropVest backend.\n\n## Features\n- User Registration\n- Login\n- Token Refresh (with rotation)\n- Logout (single device)\n- Logout All Devices\n- Health Check\n\n## Setup\n1. Import this collection into Postman\n2. Import the environment file\n3. Run requests in order (Register → Login → others)\n4. Tokens are automatically saved to environment variables",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Response has correct structure\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('status');",
+							"    pm.expect(jsonData).to.have.property('message');",
+							"    pm.expect(jsonData.status).to.eql('healthy');",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/health",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"health"
+					]
+				},
+				"description": "Check if the API server is running and healthy.\n\n**Expected Response:**\n```json\n{\n  \"status\": \"healthy\",\n  \"message\": \"PropVest API is running\"\n}\n```"
+			},
+			"response": []
+		},
+		{
+			"name": "Register User",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 201\", function () {",
+							"    pm.response.to.have.status(201);",
+							"});",
+							"",
+							"pm.test(\"Response has success structure\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('success');",
+							"    pm.expect(jsonData).to.have.property('data');",
+							"    pm.expect(jsonData.success).to.be.true;",
+							"});",
+							"",
+							"pm.test(\"Response contains user and tokens\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.data).to.have.property('user');",
+							"    pm.expect(jsonData.data).to.have.property('access_token');",
+							"    pm.expect(jsonData.data).to.have.property('refresh_token');",
+							"    pm.expect(jsonData.data.token_type).to.eql('Bearer');",
+							"});",
+							"",
+							"// Save tokens to environment",
+							"var jsonData = pm.response.json();",
+							"pm.environment.set(\"access_token\", jsonData.data.access_token);",
+							"pm.environment.set(\"refresh_token\", jsonData.data.refresh_token);",
+							"pm.environment.set(\"user_id\", jsonData.data.user.id);",
+							"",
+							"console.log(\"✅ Tokens saved to environment\");",
+							"console.log(\"User ID:\", jsonData.data.user.id);",
+							"console.log(\"Email:\", jsonData.data.user.email);"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"full_name\": \"Chukwuemeka Obi\",\n  \"email\": \"chukwuemeka@example.com\",\n  \"password\": \"SecurePass123!\",\n  \"phone\": \"+2348012345678\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/auth/register",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"register"
+					]
+				},
+				"description": "Register a new user account.\n\n**Password Requirements:**\n- Minimum 12 characters\n- At least 1 uppercase letter (A-Z)\n- At least 1 lowercase letter (a-z)\n- At least 1 digit (0-9)\n- At least 1 special character (!@#$%^&*)\n\n**Phone Format:**\n- Must be E.164 format: +234XXXXXXXXXX\n- Nigerian mobile networks only (7xx, 8xx, 9xx)\n\n**What Happens:**\n1. Password is hashed with bcrypt\n2. User account is created\n3. Wallet is created automatically (₦0.00 balance)\n4. Access token (15 min) and refresh token (30 days) are issued\n5. User is immediately logged in\n\n**Test Script:**\nAutomatically saves `access_token` and `refresh_token` to environment."
+			},
+			"response": []
+		},
+		{
+			"name": "Login",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Response has success structure\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('success');",
+							"    pm.expect(jsonData).to.have.property('data');",
+							"    pm.expect(jsonData.success).to.be.true;",
+							"});",
+							"",
+							"pm.test(\"Response contains user and tokens\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.data).to.have.property('user');",
+							"    pm.expect(jsonData.data).to.have.property('access_token');",
+							"    pm.expect(jsonData.data).to.have.property('refresh_token');",
+							"});",
+							"",
+							"// Save tokens to environment",
+							"var jsonData = pm.response.json();",
+							"pm.environment.set(\"access_token\", jsonData.data.access_token);",
+							"pm.environment.set(\"refresh_token\", jsonData.data.refresh_token);",
+							"pm.environment.set(\"user_id\", jsonData.data.user.id);",
+							"",
+							"console.log(\"✅ Tokens saved to environment\");",
+							"console.log(\"User ID:\", jsonData.data.user.id);",
+							"console.log(\"Role:\", jsonData.data.user.role);"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"email\": \"chukwuemeka@example.com\",\n  \"password\": \"SecurePass123!\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/auth/login",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"login"
+					]
+				},
+				"description": "Authenticate with email and password.\n\n**What Happens:**\n1. Email is normalized (case-insensitive)\n2. Password is verified against bcrypt hash\n3. Account status is checked (must be active)\n4. New access token and refresh token are generated\n5. Refresh token is stored in database (hashed)\n\n**Security:**\n- Generic error message if credentials are wrong (\"Invalid email or password\")\n- Doesn't reveal if email exists or password is wrong\n- Constant-time password comparison\n\n**Test Script:**\nAutomatically saves new tokens to environment."
+			},
+			"response": []
+		},
+		{
+			"name": "Refresh Token",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Response has new tokens\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData.data).to.have.property('access_token');",
+							"    pm.expect(jsonData.data).to.have.property('refresh_token');",
+							"    pm.expect(jsonData.data.token_type).to.eql('Bearer');",
+							"});",
+							"",
+							"// Save NEW tokens to environment (rotation)",
+							"var jsonData = pm.response.json();",
+							"var oldRefreshToken = pm.environment.get(\"refresh_token\");",
+							"",
+							"pm.environment.set(\"access_token\", jsonData.data.access_token);",
+							"pm.environment.set(\"refresh_token\", jsonData.data.refresh_token);",
+							"pm.environment.set(\"old_refresh_token\", oldRefreshToken);",
+							"",
+							"console.log(\"✅ New tokens saved to environment\");",
+							"console.log(\"⚠️  Old refresh token is now REVOKED\");",
+							"console.log(\"Old token saved as 'old_refresh_token' for testing\");"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/auth/refresh",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"refresh"
+					]
+				},
+				"description": "Get new access and refresh tokens using a refresh token.\n\n**Token Rotation (Security Feature):**\n1. Old refresh token is validated\n2. Old refresh token is REVOKED immediately\n3. NEW access token is generated (15 min)\n4. NEW refresh token is generated (30 days)\n5. New refresh token is stored in database\n\n**Why Rotation?**\n- If attacker steals a token, they can only use it ONCE\n- If stolen token is used, legitimate user's next refresh fails\n- This alerts user to potential breach\n- Limits damage from token theft\n\n**Important:**\nAfter calling this endpoint, you MUST use the NEW refresh token for the next refresh. The old one is permanently revoked.\n\n**Test Script:**\nAutomatically saves new tokens and keeps old token in `old_refresh_token` for testing."
+			},
+			"response": []
+		},
+		{
+			"name": "Logout (Current Device)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Response confirms logout\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('success');",
+							"    pm.expect(jsonData.success).to.be.true;",
+							"});",
+							"",
+							"console.log(\"✅ Logged out from current device\");",
+							"console.log(\"⚠️  Refresh token is now revoked\");",
+							"console.log(\"ℹ️  Access token still valid until expiration (15 min)\");"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/auth/logout",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"logout"
+					]
+				},
+				"description": "Logout from the current device.\n\n**What Happens:**\n1. Refresh token is hashed\n2. Token is looked up in database\n3. Token is marked as revoked (revoked_at = NOW())\n4. Token can no longer be used to refresh\n\n**Important Notes:**\n- Only revokes the provided refresh token (single device)\n- Access token remains valid until expiration (can't be revoked - it's stateless)\n- Client should discard both tokens locally\n- Operation is idempotent (safe to call multiple times)\n\n**After Logout:**\n- Can't refresh access token anymore\n- Must login again to get new tokens\n- Other devices remain logged in (unless using logout-all)"
+			},
+			"response": []
+		},
+		{
+			"name": "Logout All Devices",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test(\"Response confirms logout\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('success');",
+							"    pm.expect(jsonData.success).to.be.true;",
+							"});",
+							"",
+							"console.log(\"✅ Logged out from ALL devices\");",
+							"console.log(\"⚠️  All refresh tokens are now revoked\");",
+							"console.log(\"ℹ️  Must login again on EVERY device\");"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/auth/logout-all",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"logout-all"
+					]
+				},
+				"description": "Logout from ALL devices simultaneously.\n\n**Authentication Required:**\nThis endpoint requires a valid access token in the Authorization header.\n\n**What Happens:**\n1. User ID is extracted from JWT access token\n2. ALL user's refresh tokens are found\n3. ALL tokens are marked as revoked\n4. User must login again on EVERY device\n\n**Use Cases:**\n- User clicks \"Logout everywhere\" in settings\n- User changes password (automatic)\n- Admin suspends account (automatic)\n- Security breach detected\n\n**After Logout All:**\n- Can't refresh on ANY device\n- Must login again everywhere\n- Forces fresh authentication\n\n**Security:**\nThis is called automatically when user changes password to ensure old sessions are terminated."
+			},
+			"response": []
+		},
+		{
+			"name": "Test Old Refresh Token (Should Fail)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 401 (Unauthorized)\", function () {",
+							"    pm.response.to.have.status(401);",
+							"});",
+							"",
+							"pm.test(\"Response indicates invalid token\", function () {",
+							"    var jsonData = pm.response.json();",
+							"    pm.expect(jsonData).to.have.property('success');",
+							"    pm.expect(jsonData.success).to.be.false;",
+							"    pm.expect(jsonData).to.have.property('error');",
+							"});",
+							"",
+							"console.log(\"✅ Test PASSED: Old token correctly rejected\");",
+							"console.log(\"This proves token rotation is working!\");"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"refresh_token\": \"{{old_refresh_token}}\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/auth/refresh",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"auth",
+						"refresh"
+					]
+				},
+				"description": "**Test Case: Verify Token Rotation**\n\nThis request intentionally uses an OLD refresh token (from before the last refresh).\n\n**Expected Result: 401 Unauthorized**\n\nThis proves that token rotation is working correctly:\n- Old tokens are revoked after refresh\n- Can't reuse old tokens (security feature)\n- Prevents replay attacks\n\n**To Run This Test:**\n1. First run \"Refresh Token\" request\n2. Then run this request\n3. Should get 401 error\n\n**If This Passes (401):**\n✅ Token rotation is working!\n✅ Security feature is active\n\n**If This Fails (200):**\n❌ Token rotation is NOT working\n❌ Security vulnerability exists"
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Global pre-request script",
+					"// Runs before EVERY request in this collection",
+					"",
+					"// Log the request for debugging",
+					"console.log(\"🚀 Request:\", pm.info.requestName);",
+					"console.log(\"URL:\", pm.request.url.toString());"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Global test script",
+					"// Runs after EVERY request in this collection",
+					"",
+					"// Log response time",
+					"console.log(\"⏱️  Response Time:\", pm.response.responseTime, \"ms\");",
+					"",
+					"// Check for request_id in response",
+					"if (pm.response.json().request_id) {",
+					"    console.log(\"🔍 Request ID:\", pm.response.json().request_id);",
+					"}"
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8080/api/v1",
+			"type": "default"
+		}
+	]
+}

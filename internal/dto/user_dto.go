@@ -22,7 +22,7 @@ type UserResponse struct {
 	UserCode  string    `json:"user_code"`
 	FullName  string    `json:"full_name"`
 	Email     string    `json:"email"`
-	Phone     *string   `json:"phone,omitempty"`
+	Phone     string    `json:"phone"`
 	KYCStatus string    `json:"kyc_status"`
 	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"created_at"`

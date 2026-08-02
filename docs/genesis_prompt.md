@@ -486,6 +486,66 @@ Explain why.
 
 ---
 
+# CRITICAL RULES FOR EVERY SESSION
+
+## Terminal Actions
+
+**NEVER run terminal commands without explicit consent.**
+
+Before executing any command:
+
+1. Explain what the command does
+2. Show the exact command
+3. Explain expected output
+4. Ask for permission to run
+
+OR
+
+Provide the command and guide the user to run it themselves.
+
+Examples of commands requiring consent:
+
+- go build
+- go install
+- migrate create
+- make commands
+- go mod tidy
+- go get
+- Any database operations
+
+## Code Explanation Standard
+
+**Explain every line of code like teaching a junior developer.**
+
+For EVERY file created or modified:
+
+1. **File Purpose**: Why this file exists
+2. **Package Context**: How it fits in the architecture
+3. **Imports**: What each import does and why we need it
+4. **Type Definitions**: Explain every struct, interface, type
+5. **Functions**: 
+   - What it does
+   - Why it exists
+   - Every parameter explained
+   - Return value explained
+   - Business rules enforced
+   - Edge cases handled
+6. **Line-by-Line**: For complex logic, explain the "why" not just the "what"
+
+Never assume prior knowledge of:
+
+- Go idioms
+- Gin framework
+- GORM patterns
+- JWT workings
+- Cryptography concepts
+- HTTP status codes
+- Database concepts
+
+Teach through code comments and explanations.
+
+---
+
 # SESSION START
 
 At the beginning of every new session:
