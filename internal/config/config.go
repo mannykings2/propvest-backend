@@ -19,6 +19,23 @@ type Config struct {
 	AccessTokenTTL     string `mapstructure:"ACCESS_TOKEN_TTL"`
 	RefreshTokenTTL    string `mapstructure:"REFRESH_TOKEN_TTL"`
 	AllowedOrigins     string `mapstructure:"ALLOWED_ORIGINS"`
+	
+	// Cloudinary configuration for image uploads
+	CloudinaryCloudName  string `mapstructure:"CLOUDINARY_CLOUD_NAME"`
+	CloudinaryAPIKey     string `mapstructure:"CLOUDINARY_API_KEY"`
+	CloudinaryAPISecret  string `mapstructure:"CLOUDINARY_API_SECRET"`
+	CloudinaryUploadPreset string `mapstructure:"CLOUDINARY_UPLOAD_PRESET"`
+	
+	// SMS configuration for OTP verification
+	SMSProvider           string `mapstructure:"SMS_PROVIDER"`
+	TwilioAccountSID      string `mapstructure:"TWILIO_ACCOUNT_SID"`
+	TwilioAuthToken       string `mapstructure:"TWILIO_AUTH_TOKEN"`
+	TwilioPhoneNumber     string `mapstructure:"TWILIO_PHONE_NUMBER"`
+	AfricasTalkingUsername string `mapstructure:"AFRICASTALKING_USERNAME"`
+	AfricasTalkingAPIKey   string `mapstructure:"AFRICASTALKING_API_KEY"`
+	AfricasTalkingSenderID string `mapstructure:"AFRICASTALKING_SENDER_ID"`
+	TermiiAPIKey          string `mapstructure:"TERMII_API_KEY"`
+	TermiiSenderID        string `mapstructure:"TERMII_SENDER_ID"`
 }
 
 // Load reads the .env file and maps it into a Config struct.

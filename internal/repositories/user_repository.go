@@ -18,9 +18,13 @@ type UserRepository interface {
 	Create(ctx context.Context, user *models.User) error
 	FindByID(ctx context.Context, id uuid.UUID) (*models.User, error)
 	FindByEmail(ctx context.Context, email string) (*models.User, error)
+	FindByPhone(ctx context.Context, phone string) (*models.User, error)
 	Update(ctx context.Context, user *models.User) error
+	UpdatePartial(ctx context.Context, id uuid.UUID, updates map[string]interface{}) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
+	ExistsByPhone(ctx context.Context, phone string) (bool, error)
+	FindByIDWithWallet(ctx context.Context, id uuid.UUID) (*models.User, error)
 }
 
 // userRepository is the concrete implementation of UserRepository.
@@ -70,6 +74,29 @@ func (r *userRepository) FindByEmail(ctx context.Context, email string) (*models
 	return &user, nil
 }
 
+// FindByPhone retrieves a user by their phone number.
+// Returns gorm.ErrRecordNotFound if no user has that phone.
+//
+// Used for:
+//   - Phone uniqueness validation during registration
+//   - Phone update validation (prevent duplicates)
+//   - Phone-based authentication (future feature)
+//
+// Example usage:
+//   user, err := repo.FindByPhone(ctx, "+2348012345678")
+//   if err == nil {
+//       return errors.ErrPhoneAlreadyExists
+//   }
+func (r *userRepository) FindByPhone(ctx context.Context, phone string) (*models.User, error) {
+	var user models.User
+	// WHERE phone = ? uses the unique index for fast lookup
+	err := r.WithContext(ctx).Where("phone = ?", phone).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 // Update saves changes to an existing user record.
 // GORM automatically updates the updated_at field via the database trigger.
 //
@@ -77,6 +104,51 @@ func (r *userRepository) FindByEmail(ctx context.Context, email string) (*models
 //   db.Model(&user).Updates(map[string]interface{}{"field": value})
 func (r *userRepository) Update(ctx context.Context, user *models.User) error {
 	return r.WithContext(ctx).Save(user).Error
+}
+
+// UpdatePartial updates only specific fields of a user record.
+// This is more efficient than Update() when you only want to change a few fields.
+//
+// Parameters:
+//   - id: UUID of the user to update
+//   - updates: Map of field names to new values
+//
+// Example usage (update just the phone):
+//   updates := map[string]interface{}{
+//       "phone": "+2348012345678",
+//       "updated_at": time.Now(),
+//   }
+//   err := repo.UpdatePartial(ctx, userID, updates)
+//
+// Example usage (update name and avatar):
+//   updates := map[string]interface{}{
+//       "full_name": "New Name",
+//       "avatar_url": "https://cloudinary.com/image.jpg",
+//   }
+//   err := repo.UpdatePartial(ctx, userID, updates)
+//
+// Why use UpdatePartial instead of Update?
+//   - Update() requires loading the full user first
+//   - UpdatePartial() directly executes UPDATE query
+//   - More efficient for single-field changes
+//   - Atomic operation (no race conditions)
+//
+// Generated SQL:
+//   UPDATE users 
+//   SET phone = $1, updated_at = NOW() 
+//   WHERE id = $2 AND deleted_at IS NULL
+func (r *userRepository) UpdatePartial(ctx context.Context, id uuid.UUID, updates map[string]interface{}) error {
+	// Model(&models.User{}) tells GORM which table to update
+	// Where("id = ?", id) specifies which row
+	// Updates(updates) sets the fields from the map
+	//
+	// GORM automatically adds:
+	//   - updated_at = NOW()
+	//   - AND deleted_at IS NULL (soft-delete check)
+	return r.WithContext(ctx).
+		Model(&models.User{}).
+		Where("id = ?", id).
+		Updates(updates).Error
 }
 
 // Delete performs a soft delete on a user.
@@ -96,6 +168,41 @@ func (r *userRepository) Delete(ctx context.Context, id uuid.UUID) error {
 func (r *userRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	var count int64
 	err := r.WithContext(ctx).Model(&models.User{}).Where("email = ?", email).Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// ExistsByPhone checks if a user with the given phone number already exists.
+// Returns true if exists, false otherwise.
+//
+// Used for:
+//   - Registration validation (prevent duplicate phones)
+//   - Phone update validation (prevent taking another user's phone)
+//
+// Example usage:
+//   exists, err := repo.ExistsByPhone(ctx, "+2348012345678")
+//   if err != nil {
+//       return errors.ErrInternalServer
+//   }
+//   if exists {
+//       return errors.ErrPhoneAlreadyExists
+//   }
+//
+// Why Count() instead of First()?
+//   - Count() only queries the index, not the full row
+//   - More efficient when you don't need the data
+//   - Standard pattern for existence checks
+func (r *userRepository) ExistsByPhone(ctx context.Context, phone string) (bool, error) {
+	var count int64
+	// Count() generates SQL:
+	//   SELECT COUNT(*) FROM users 
+	//   WHERE phone = $1 AND deleted_at IS NULL
+	err := r.WithContext(ctx).
+		Model(&models.User{}).
+		Where("phone = ?", phone).
+		Count(&count).Error
 	if err != nil {
 		return false, err
 	}

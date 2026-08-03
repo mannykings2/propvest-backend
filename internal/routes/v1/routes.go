@@ -13,6 +13,7 @@ import (
 // Parameters:
 //   - router: Gin router group for /api/v1
 //   - authHandler: Handler for authentication endpoints
+//   - userHandler: Handler for user management endpoints
 //   - cfg: Application configuration (needed for middleware)
 //
 // Route organization:
@@ -26,7 +27,12 @@ import (
 //   /api/v1/admin/*         - Admin operations (Milestone 7)
 //
 // Each route group will be extracted to its own file as it grows.
-func RegisterRoutes(router *gin.RouterGroup, authHandler *handlers.AuthHandler, cfg *config.Config) {
+func RegisterRoutes(
+	router *gin.RouterGroup,
+	authHandler *handlers.AuthHandler,
+	userHandler *handlers.UserHandler,
+	cfg *config.Config,
+) {
 	// ───────────────────────────────────────────────────────────────────
 	// PUBLIC ROUTES (no authentication required)
 	// ───────────────────────────────────────────────────────────────────
@@ -68,15 +74,32 @@ func RegisterRoutes(router *gin.RouterGroup, authHandler *handlers.AuthHandler, 
 	// ───────────────────────────────────────────────────────────────────
 	// USER ROUTES (Milestone 2, requires authentication)
 	// ───────────────────────────────────────────────────────────────────
-	// users := router.Group("/users")
-	// users.Use(middleware.Auth())  // All routes require authentication
-	// {
-	//     users.GET("/me", userHandler.GetProfile)
-	//     users.PATCH("/me", userHandler.UpdateProfile)
-	//     users.PATCH("/avatar", userHandler.UploadAvatar)
-	//     users.PATCH("/password", userHandler.ChangePassword)
-	//     users.DELETE("/me", userHandler.DeleteAccount)
-	// }
+	users := router.Group("/users")
+	users.Use(middleware.Auth(cfg))  // All routes require authentication
+	{
+		// GET /api/v1/users/me - Get current user's profile
+		users.GET("/me", userHandler.GetProfile)
+
+		// PATCH /api/v1/users/me - Update profile (name)
+		users.PATCH("/me", userHandler.UpdateProfile)
+
+		// PATCH /api/v1/users/avatar - Upload avatar image
+		users.PATCH("/avatar", userHandler.UploadAvatar)
+
+		// PATCH /api/v1/users/password - Change password
+		users.PATCH("/password", userHandler.ChangePassword)
+
+		// POST /api/v1/users/phone/request - Request phone number change (sends OTP)
+		users.POST("/phone/request", userHandler.RequestPhoneChange)
+
+		// POST /api/v1/users/phone/verify - Verify phone change with OTP
+		users.POST("/phone/verify", userHandler.VerifyPhoneChange)
+
+		// Future endpoints:
+		// users.DELETE("/me", userHandler.DeleteAccount)
+		// users.GET("/preferences", userHandler.GetPreferences)
+		// users.PATCH("/preferences", userHandler.UpdatePreferences)
+	}
 
 	// ───────────────────────────────────────────────────────────────────
 	// WALLET ROUTES (Milestone 3, requires authentication)
