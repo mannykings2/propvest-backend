@@ -12,6 +12,8 @@ import (
     "github.com/mannykings2/propvest-backend/internal/repositories"
     v1 "github.com/mannykings2/propvest-backend/internal/routes/v1"
     "github.com/mannykings2/propvest-backend/internal/services"
+    "github.com/mannykings2/propvest-backend/internal/utils/cloudinary"
+    "github.com/mannykings2/propvest-backend/internal/utils/sms"
 )
 
 func main() {
@@ -73,8 +75,9 @@ func main() {
 	userRepo := repositories.NewUserRepository(database.DB)
 	walletRepo := repositories.NewWalletRepository(database.DB)
 	refreshTokenRepo := repositories.NewRefreshTokenRepository(database.DB) // Milestone 1: Authentication
+	otpRepo := repositories.NewOTPVerificationRepository(database.DB)      // Milestone 2: Phone verification
 
-	// Future repositories (Milestone 2+):
+	// Future repositories (Milestone 3+):
 	// propertyRepo := repositories.NewPropertyRepository(database.DB)
 	// investmentRepo := repositories.NewInvestmentRepository(database.DB)
 	// notificationRepo := repositories.NewNotificationRepository(database.DB)
@@ -85,8 +88,19 @@ func main() {
 	// Services contain business logic. They receive repositories and
 	// config via constructor injection.
 	log.Println("Initializing services...")
+
+	// Initialize utilities
+	cloudinaryService, err := cloudinary.NewCloudinaryService(cfg)
+	if err != nil {
+		log.Printf("Warning: Cloudinary not configured: %v", err)
+		// Non-fatal - avatar uploads will fail but other features work
+	}
+
+	smsService := sms.NewSMSService(cfg) // SMS service (mock in development)
+
+	// Initialize services
 	authService := services.NewAuthService(userRepo, walletRepo, refreshTokenRepo, cfg, database.DB)
-	userService := services.NewUserService(userRepo)
+	userService := services.NewUserService(userRepo, otpRepo, refreshTokenRepo, smsService, cloudinaryService, cfg)
 	walletService := services.NewWalletService(walletRepo, userRepo)
 
 	// Future services (Milestone 4+):
@@ -101,13 +115,13 @@ func main() {
 	// They receive services via constructor injection.
 	log.Println("Initializing handlers...")
 	authHandler := handlers.NewAuthHandler(authService)
+	userHandler := handlers.NewUserHandler(userService)
 
-	// Future handlers (Milestone 2+):
-	// userHandler := handlers.NewUserHandler(userService)
+	// Future handlers (Milestone 3+):
 	// walletHandler := handlers.NewWalletHandler(walletService)
+	// propertyHandler := handlers.NewPropertyHandler(propertyService)
 
 	// Silence "unused variable" warnings for now
-	_ = userService
 	_ = walletService
 
 	// ──────────────────────────────────────────────────────────────────
@@ -156,11 +170,11 @@ func main() {
 	// Route registration is delegated to the routes package
 	log.Println("Registering routes...")
 	apiV1 := r.Group("/api/v1")
-	v1.RegisterRoutes(apiV1, authHandler, cfg)
+	v1.RegisterRoutes(apiV1, authHandler, userHandler, cfg)
 
 	// Future: When we add v2, we create a new routes package
 	// apiV2 := r.Group("/api/v2")
-	// v2.RegisterRoutes(apiV2, authHandler, cfg)
+	// v2.RegisterRoutes(apiV2, authHandler, userHandler, cfg)
 
 	// ──────────────────────────────────────────────────────────────────
 	// 10. START HTTP SERVER

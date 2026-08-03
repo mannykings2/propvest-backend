@@ -49,6 +49,21 @@ var (
 	ErrPasswordWeak   = errors.New("password does not meet security requirements")
 	ErrPasswordWrong  = errors.New("current password is incorrect")
 	ErrSamePassword   = errors.New("new password cannot be the same as current password")
+	ErrPhoneAlreadyExists = errors.New("phone number already registered")
+	ErrInvalidImageFormat = errors.New("invalid image format: only jpg, jpeg, png, gif, webp allowed")
+	ErrImageTooLarge      = errors.New("image file too large: maximum 5MB for avatars, 10MB for properties")
+	ErrImageUploadFailed  = errors.New("failed to upload image")
+
+	// ───────────────────────────────────────────────────────────────────
+	// OTP ERRORS
+	// ───────────────────────────────────────────────────────────────────
+	ErrInvalidOTP         = errors.New("invalid or expired OTP code")
+	ErrOTPExpired         = errors.New("OTP code has expired")
+	ErrOTPAlreadyUsed     = errors.New("OTP code has already been used")
+	ErrTooManyOTPAttempts = errors.New("too many failed attempts: please request a new OTP")
+	ErrOTPAlreadySent     = errors.New("OTP already sent: please wait before requesting another")
+	ErrTooManyOTPRequests = errors.New("too many OTP requests: please try again later")
+	ErrOTPNotFound        = errors.New("no active OTP found for this phone number")
 
 	// ───────────────────────────────────────────────────────────────────
 	// WALLET ERRORS
@@ -87,6 +102,7 @@ var (
 	// VALIDATION ERRORS
 	// ───────────────────────────────────────────────────────────────────
 	ErrValidation       = errors.New("validation failed")
+	ErrValidationFailed = errors.New("validation failed") // Alias for consistency
 	ErrInvalidEmail     = errors.New("invalid email format")
 	ErrInvalidPhone     = errors.New("invalid phone number format")
 	ErrInvalidUUID      = errors.New("invalid UUID format")

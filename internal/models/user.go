@@ -62,6 +62,18 @@ type User struct {
 	// IsActive allows admins to suspend an account without deleting it.
 	IsActive bool `gorm:"default:true;not null" json:"is_active"`
 
+	// AvatarURL stores the Cloudinary URL of the user's profile picture
+	// Example: "https://res.cloudinary.com/propvest/image/upload/v1234567890/avatars/user-abc123.jpg"
+	// Nullable because users might not upload an avatar
+	// If nil, frontend shows a default avatar (initials or placeholder)
+	AvatarURL *string `json:"avatar_url,omitempty"`
+
+	// EmailVerified tracks if user has verified their email address
+	// Set to true when user clicks the verification link sent via email
+	// Default false means: email not verified yet
+	// Future feature: Require email verification before certain actions
+	EmailVerified bool `gorm:"default:false;not null" json:"email_verified"`
+
 	// GORM automatically manages these three fields when you use
 	// gorm.Model or declare them explicitly like this.
 	// CreatedAt: set once on INSERT, never updated
