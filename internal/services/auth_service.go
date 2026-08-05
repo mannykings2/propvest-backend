@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 	"github.com/mannykings2/propvest-backend/internal/utils/jwt"
 	"github.com/mannykings2/propvest-backend/internal/utils/password"
+	"github.com/mannykings2/propvest-backend/internal/validators"
 	"gorm.io/gorm"
 )
 
@@ -137,7 +137,7 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 	// Phone must be in E.164 format: +2348012345678
 	// This ensures consistency and enables SMS delivery
 	phone := strings.TrimSpace(req.Phone)
-	if err := validateNigerianPhone(phone); err != nil {
+	if err := validators.ValidateNigerianPhone(phone); err != nil {
 		return nil, err
 	}
 
@@ -145,7 +145,7 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 	// From security requirements:
 	//   - Minimum 12 characters
 	//   - At least 1 uppercase, 1 lowercase, 1 digit, 1 special char
-	if err := validatePasswordComplexity(req.Password); err != nil {
+	if err := validators.ValidatePasswordComplexity(req.Password); err != nil {
 		return nil, err
 	}
 
@@ -616,89 +616,3 @@ func hashToken(token string) string {
 // validatePasswordComplexity enforces password strength rules
 //
 // Requirements (from security doc):
-//   - Minimum 12 characters
-//   - At least 1 uppercase letter (A-Z)
-//   - At least 1 lowercase letter (a-z)
-//   - At least 1 digit (0-9)
-//   - At least 1 special character (!@#$%^&*()_+{}|:"<>?[]-=;',./`~)
-//
-// Why these rules?
-//   - Length: Increases brute-force difficulty exponentially
-//   - Complexity: Prevents dictionary attacks ("password123" is common)
-//   - Special chars: Forces mixing character sets (harder to guess)
-//
-// Trade-off:
-//   Strict rules can frustrate users. Balance security with usability.
-//   Consider allowing passphrases: "correct horse battery staple" (44 bits entropy)
-//   vs complex password: "P@ssw0rd!" (28 bits entropy)
-//
-// Returns:
-//   - nil if password meets all requirements
-//   - ErrWeakPassword if any requirement fails
-func validatePasswordComplexity(pwd string) error {
-	// Check minimum length
-	if len(pwd) < 12 {
-		return errors.ErrWeakPassword
-	}
-
-	// Check maximum length (bcrypt truncates at 72 bytes)
-	if len(pwd) > 72 {
-		return errors.ErrPasswordTooLong
-	}
-
-	// Define regex patterns for each requirement
-	// [A-Z] means "any uppercase letter"
-	// + means "one or more times"
-	hasUppercase := regexp.MustCompile(`[A-Z]+`).MatchString(pwd)
-	hasLowercase := regexp.MustCompile(`[a-z]+`).MatchString(pwd)
-	hasDigit := regexp.MustCompile(`[0-9]+`).MatchString(pwd)
-	// Special characters: common symbols on keyboard
-	hasSpecial := regexp.MustCompile(`[!@#$%^&*()_+{}\|:"<>?\[\]\-=;',./` + "`~]+").MatchString(pwd)
-
-	// All requirements must be met
-	if !hasUppercase || !hasLowercase || !hasDigit || !hasSpecial {
-		return errors.ErrWeakPassword
-	}
-
-	return nil
-}
-
-// validateNigerianPhone enforces E.164 phone format for Nigerian numbers
-//
-// E.164 format: +[country code][number]
-// Nigerian numbers: +234[area code][number]
-//
-// Valid examples:
-//   +2348012345678 (11 digits after +234)
-//   +2347012345678
-//   +2349012345678
-//
-// Invalid examples:
-//   08012345678 (missing country code)
-//   2348012345678 (missing +)
-//   +234 801 234 5678 (spaces not allowed)
-//
-// Why E.164?
-//   - International standard for phone numbers
-//   - Works with SMS providers worldwide
-//   - Consistent format in database
-//   - Enables phone number portability
-//
-// Returns:
-//   - nil if phone matches pattern
-//   - ErrInvalidPhoneFormat otherwise
-func validateNigerianPhone(phone string) error {
-	// Regex breakdown:
-	//   ^\+234       - Must start with +234 (Nigerian country code)
-	//   [789]        - Area code must be 7, 8, or 9 (Nigerian mobile networks)
-	//   [01]         - Second digit is 0 or 1
-	//   \d{8}$       - Exactly 8 more digits
-	//
-	// Total length: +234 (4) + [789] (1) + [01] (1) + 8 digits = 14 characters
-	matched, _ := regexp.MatchString(`^\+234[789][01]\d{8}$`, phone)
-	if !matched {
-		return errors.ErrInvalidPhoneFormat
-	}
-
-	return nil
-}

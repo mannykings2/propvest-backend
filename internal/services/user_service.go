@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"mime/multipart"
-	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/mannykings2/propvest-backend/internal/utils/otp"
 	"github.com/mannykings2/propvest-backend/internal/utils/password"
 	"github.com/mannykings2/propvest-backend/internal/utils/sms"
+	"github.com/mannykings2/propvest-backend/internal/validators"
 )
 
 // UserService handles user management business logic
@@ -175,7 +175,7 @@ func (s *userService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 	}
 
 	// Validate new password complexity
-	if err := validatePasswordComplexity(req.NewPassword); err != nil {
+	if err := validators.ValidatePasswordComplexity(req.NewPassword); err != nil {
 		return err
 	}
 
@@ -205,7 +205,7 @@ func (s *userService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 func (s *userService) RequestPhoneChange(ctx context.Context, userID uuid.UUID, req dto.RequestPhoneChangeRequest) (*dto.PhoneChangeResponse, error) {
 	// Validate phone format
 	phone := strings.TrimSpace(req.NewPhone)
-	if err := validateNigerianPhone(phone); err != nil {
+	if err := validators.ValidateNigerianPhone(phone); err != nil {
 		return nil, err
 	}
 
@@ -338,33 +338,3 @@ func (s *userService) VerifyPhoneChange(ctx context.Context, userID uuid.UUID, r
 	return s.GetProfile(ctx, userID)
 }
 
-// validatePasswordComplexity enforces password strength rules
-func validatePasswordComplexity(pwd string) error {
-	if len(pwd) < 12 {
-		return errors.ErrWeakPassword
-	}
-
-	if len(pwd) > 72 {
-		return errors.ErrPasswordTooLong
-	}
-
-	hasUppercase := regexp.MustCompile(`[A-Z]+`).MatchString(pwd)
-	hasLowercase := regexp.MustCompile(`[a-z]+`).MatchString(pwd)
-	hasDigit := regexp.MustCompile(`[0-9]+`).MatchString(pwd)
-	hasSpecial := regexp.MustCompile(`[!@#$%^&*()_+{}\|:"<>?\[\]\-=;',./` + "`~]+").MatchString(pwd)
-
-	if !hasUppercase || !hasLowercase || !hasDigit || !hasSpecial {
-		return errors.ErrWeakPassword
-	}
-
-	return nil
-}
-
-// validateNigerianPhone enforces E.164 phone format for Nigerian numbers
-func validateNigerianPhone(phone string) error {
-	matched, _ := regexp.MatchString(`^\+234[789][01]\d{8}$`, phone)
-	if !matched {
-		return errors.ErrInvalidPhoneFormat
-	}
-	return nil
-}
