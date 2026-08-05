@@ -186,6 +186,7 @@ func (s *CloudinaryService) UploadAvatar(ctx context.Context, file *multipart.Fi
 
 	// Step 5: Upload to Cloudinary
 	// Upload() sends the file to Cloudinary and waits for response
+	overwrite := true
 	uploadResult, err := s.client.Upload.Upload(
 		ctx,
 		src, // File content (io.Reader)
@@ -195,16 +196,19 @@ func (s *CloudinaryService) UploadAvatar(ctx context.Context, file *multipart.Fi
 
 			// Transformations applied during upload:
 			// These make images load faster on the website
-			Transformation: "c_fill,g_face,h_400,w_400", // Crop to 400x400, focus on face
+			//Transformation: "c_fill,g_face,h_400,w_400", // Crop to 400x400, focus on face
 
 			// Quality and format optimization
 			// Cloudinary automatically converts to best format for browser
-			QualityAuto: "best", // Automatic quality optimization
+			//QualityAuto: "best", // Automatic quality optimization
+
+			Transformation: "c_fill,g_face,h_400,w_400,f_auto,q_auto",
+			Overwrite: &overwrite,
 
 			// Overwrite existing file with same PublicID
 			// This allows users to update their avatar
-			Overwrite: true,
-
+			//Overwrite: true,
+			
 			// Resource type (image, video, raw)
 			ResourceType: "image",
 		},
@@ -274,15 +278,19 @@ func (s *CloudinaryService) UploadPropertyImage(ctx context.Context, file *multi
 	publicID := fmt.Sprintf("properties/%s/%d", propertyID.String()[:8], time.Now().Unix())
 
 	// Upload with property-specific transformations
+	overwrite := true
 	uploadResult, err := s.client.Upload.Upload(
 		ctx,
 		src,
 		uploader.UploadParams{
 			PublicID:     publicID,
 			Folder:       "properties",
-			Transformation: "c_limit,w_1920,h_1080", // Limit max size, preserve aspect ratio
-			QualityAuto:  "good",
-			Overwrite:    true,
+			//Transformation: "c_limit,w_1920,h_1080", // Limit max size, preserve aspect ratio
+			//QualityAuto:  "good",
+			//Overwrite:    true,
+
+			Transformation: "c_limit,w_1920,h_1080,f_auto,q_auto",
+			Overwrite: &overwrite,
 			ResourceType: "image",
 		},
 	)
@@ -397,43 +405,3 @@ func ValidateImageFile(file *multipart.FileHeader, maxSize int64, allowedFormats
 	return nil
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// TEACHING NOTES: Why Cloudinary?
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Local File Storage Problems:
-//   1. Disk space runs out
-//   2. Backups include images (expensive)
-//   3. Serving images loads your server
-//   4. No CDN (slow for international users)
-//   5. Image optimization requires manual work
-//   6. Difficult to scale (multiple servers need shared storage)
-//
-// Cloudinary Solutions:
-//   1. Unlimited storage (you pay for usage)
-//   2. Images stored separately from backups
-//   3. Images served from Cloudinary CDN (not your server)
-//   4. Global CDN (fast worldwide)
-//   5. Automatic image optimization
-//   6. Works perfectly with multiple servers
-//
-// Cloudinary Features:
-//   - Automatic format conversion (serve WebP to Chrome, JPEG to Safari)
-//   - Responsive images (different sizes for mobile/desktop)
-//   - Lazy loading support
-//   - Image transformations (resize, crop, filters)
-//   - Video support (future feature)
-//   - PDF thumbnails (for property documents)
-//
-// Alternatives:
-//   - AWS S3 + CloudFront (more control, more complex)
-//   - Imgix (similar to Cloudinary)
-//   - Vercel Image Optimization (if using Vercel)
-//
-// Free Tier:
-//   - 25 GB storage
-//   - 25 GB bandwidth
-//   - 25,000 transformations
-//   - Perfect for MVP and small apps
-//
-// ═══════════════════════════════════════════════════════════════════════════
