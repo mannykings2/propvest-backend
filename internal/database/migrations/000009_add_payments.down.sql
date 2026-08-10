@@ -1,0 +1,2 @@
+-- Rollback 000009.
+DROP TABLE IF EXISTS payments CASCADE;

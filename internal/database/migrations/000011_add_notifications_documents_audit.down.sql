@@ -1,0 +1,4 @@
+-- Rollback 000011.
+DROP TABLE IF EXISTS audit_logs CASCADE;
+DROP TABLE IF EXISTS property_documents CASCADE;
+DROP TABLE IF EXISTS notifications CASCADE;

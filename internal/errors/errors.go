@@ -132,6 +132,7 @@ var (
 	ErrExternal       = errors.New("external service error")
 	ErrInternal       = errors.New("internal server error")
 	ErrInternalServer = errors.New("internal server error") // Alias for consistency
+	ErrNotImplemented = errors.New("feature not yet implemented")
 )
 
 // AppError wraps an error with additional context.

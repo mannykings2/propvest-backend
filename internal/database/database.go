@@ -8,6 +8,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/mannykings2/propvest-backend/internal/config"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	pgdriver "gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -18,47 +19,48 @@ import (
 // It is safe to use concurrently — GORM manages a connection pool internally.
 var DB *gorm.DB
 
-// Connect opens the database connection and stores it in the package-level
-// DB variable. It is called once at startup.
-func Connect(dsn string) {
+// Connect opens the database connection and stores it in the package-level DB
+// variable. It is called once at startup.
+//
+// Pool settings and the SQL log level are now driven by config (config-hardening
+// item in the handoff): the values were previously hardcoded here.
+func Connect(cfg *config.Config) {
 	var err error
 
-	DB, err = gorm.Open(pgdriver.Open(dsn), &gorm.Config{
-		// In development, log every SQL query so you can see exactly
-		// what GORM is sending to the database. In production you would
-		// set this to logger.Silent or logger.Warn.
-		Logger: logger.Default.LogMode(logger.Info),
-	})
+	// SQL logging is verbose in dev (see every query) and quiet in production.
+	gormLogLevel := logger.Info
+	if cfg.IsProduction() {
+		gormLogLevel = logger.Warn
+	}
 
+	DB, err = gorm.Open(pgdriver.Open(cfg.DatabaseURL), &gorm.Config{
+		Logger: logger.Default.LogMode(gormLogLevel),
+	})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
 	log.Println("Database connection established")
 
-	// Get the underlying database/sql connection pool.
 	sqlDB, err := DB.DB()
 	if err != nil {
 		log.Fatalf("Failed to get underlying sql.DB: %v", err)
 	}
 
-	// Configure the connection pool.
-	//
-	// MaxOpenConns:
-	//   Maximum number of open connections to the database.
-	sqlDB.SetMaxOpenConns(25)
+	// Connection pool tuning from config (with parsed durations).
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
 
-	// MaxIdleConns:
-	//   Number of idle connections kept ready for future requests.
-	sqlDB.SetMaxIdleConns(10)
-
-	// ConnMaxLifetime:
-	//   Recycle connections after one hour to avoid stale connections.
-	sqlDB.SetConnMaxLifetime(time.Hour)
-
-	// ConnMaxIdleTime:
-	//   Close idle connections after 15 minutes.
-	sqlDB.SetConnMaxIdleTime(15 * time.Minute)
+	if d, perr := time.ParseDuration(cfg.DBConnMaxLifetime); perr == nil {
+		sqlDB.SetConnMaxLifetime(d)
+	} else {
+		sqlDB.SetConnMaxLifetime(time.Hour)
+	}
+	if d, perr := time.ParseDuration(cfg.DBConnMaxIdleTime); perr == nil {
+		sqlDB.SetConnMaxIdleTime(d)
+	} else {
+		sqlDB.SetConnMaxIdleTime(15 * time.Minute)
+	}
 
 	log.Println("Database connection pool configured")
 }

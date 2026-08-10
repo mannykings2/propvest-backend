@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"fmt"
 	"mime/multipart"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/mannykings2/propvest-backend/internal/config"
 	"github.com/mannykings2/propvest-backend/internal/dto"
 	"github.com/mannykings2/propvest-backend/internal/errors"
+	"github.com/mannykings2/propvest-backend/internal/logger"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 	"github.com/mannykings2/propvest-backend/internal/utils/cloudinary"
@@ -195,8 +195,14 @@ func (s *userService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 		return errors.ErrInternalServer
 	}
 
-	// Revoke all refresh tokens (force re-login on all devices)
-	_ = s.refreshTokenRepo.RevokeAllByUserID(ctx, userID)
+	// Revoke all refresh tokens (force re-login on all devices).
+	// FIX-03: this is security-critical after a password change. If we cannot
+	// revoke sessions we must NOT report success — otherwise a stolen refresh
+	// token would survive the password change. Fail closed.
+	if err := s.refreshTokenRepo.RevokeAllByUserID(ctx, userID); err != nil {
+		logger.Error("change-password: failed to revoke sessions", "user_id", userID, "error", err)
+		return errors.ErrInternalServer
+	}
 
 	return nil
 }
@@ -263,8 +269,9 @@ func (s *userService) RequestPhoneChange(ctx context.Context, userID uuid.UUID, 
 	// Send OTP via SMS
 	err = s.smsService.SendOTP(ctx, phone, code)
 	if err != nil {
-		// Log error but don't fail (OTP is stored, user can try again)
-		fmt.Printf("Failed to send SMS: %v\n", err)
+		// Log error but don't fail (OTP is stored, user can try again).
+		// FIX-03: use the structured logger instead of fmt.Printf.
+		logger.Error("phone-change: failed to send OTP SMS", "user_id", userID, "error", err)
 	}
 
 	return &dto.PhoneChangeResponse{
