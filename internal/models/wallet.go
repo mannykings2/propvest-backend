@@ -1,8 +1,10 @@
 package models
 
 import (
-    "time"
-    "github.com/google/uuid"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/datatypes"
 )
 
 // Wallet represents the financial account belonging to a single User.
@@ -46,16 +48,38 @@ type Wallet struct {
 }
 
 
+// WalletTransaction is the append-only financial ledger. Every balance change
+// writes exactly one row here (docs 2.3 Transaction Model). Rows are NEVER
+// updated or deleted once completed; corrections are new compensating rows.
+//
+// DECISION D5: the original table only had wallet_id/type/amount/reference. We
+// extended it (migration 000007) with user_id, external_reference,
+// idempotency_key, and metadata so it can satisfy the transaction-model doc and
+// support idempotent deposits/withdrawals — WITHOUT renaming the table (which
+// would break existing code/data).
 type WalletTransaction struct {
-    ID            uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-    WalletID      uuid.UUID `gorm:"type:uuid;not null;index"`
-    Type          string    `gorm:"not null"` // deposit|withdrawal|investment|rental_income|transfer|fee
-    Amount        int64     `gorm:"not null"`
-    BalanceBefore int64     `gorm:"not null"`
-    BalanceAfter  int64     `gorm:"not null"`
-    Reference     string    `gorm:"uniqueIndex;not null"`
-    Description   string
-    Status        string    `gorm:"default:'completed'"` // pending|completed|failed|reversed
-    CreatedAt     time.Time
-    // NOTE: Never UPDATE or DELETE rows in this table — it is an append-only ledger
+	ID       uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	WalletID uuid.UUID `gorm:"type:uuid;not null;index" json:"wallet_id"`
+	// UserID denormalizes the owner so we can query "all of a user's
+	// transactions" without joining through wallets.
+	UserID uuid.UUID `gorm:"type:uuid;index" json:"user_id"`
+	// Type: deposit|withdrawal|investment|refund|reversal|fee|rental_income|transfer
+	Type          string `gorm:"not null" json:"type"`
+	Amount        int64  `gorm:"not null" json:"amount"` // kobo, always positive
+	BalanceBefore int64  `gorm:"not null" json:"balance_before"`
+	BalanceAfter  int64  `gorm:"not null" json:"balance_after"`
+	// Reference is our unique internal reference and doubles as the idempotency
+	// anchor for ledger writes.
+	Reference string `gorm:"uniqueIndex;not null" json:"reference"`
+	// ExternalReference is the payment provider's reference (Paystack), when any.
+	ExternalReference *string `gorm:"index" json:"external_reference,omitempty"`
+	// IdempotencyKey is the client-supplied key that prevents duplicate creation
+	// on retries. Unique when present.
+	IdempotencyKey *string `gorm:"uniqueIndex" json:"idempotency_key,omitempty"`
+	Description    string  `json:"description"`
+	// Status: pending|processing|completed|failed|reversed
+	Status string `gorm:"default:'completed'" json:"status"`
+	// Metadata is free-form JSON for provider payloads / extra context.
+	Metadata  datatypes.JSON `gorm:"type:jsonb" json:"metadata,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
 }

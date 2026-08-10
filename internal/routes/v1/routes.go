@@ -14,6 +14,7 @@ import (
 //   - router: Gin router group for /api/v1
 //   - authHandler: Handler for authentication endpoints
 //   - userHandler: Handler for user management endpoints
+//   - walletHandler: Handler for wallet operations (Milestone 3)
 //   - cfg: Application configuration (needed for middleware)
 //
 // Route organization:
@@ -31,6 +32,7 @@ func RegisterRoutes(
 	router *gin.RouterGroup,
 	authHandler *handlers.AuthHandler,
 	userHandler *handlers.UserHandler,
+	walletHandler *handlers.WalletHandler,
 	cfg *config.Config,
 ) {
 	// ───────────────────────────────────────────────────────────────────
@@ -104,14 +106,59 @@ func RegisterRoutes(
 	// ───────────────────────────────────────────────────────────────────
 	// WALLET ROUTES (Milestone 3, requires authentication)
 	// ───────────────────────────────────────────────────────────────────
-	// wallet := router.Group("/wallet")
-	// wallet.Use(middleware.Auth())
-	// {
-	//     wallet.GET("", walletHandler.GetWallet)
-	//     wallet.POST("/deposit", walletHandler.InitiateDeposit)
-	//     wallet.POST("/withdraw", walletHandler.InitiateWithdrawal)
-	//     wallet.GET("/transactions", walletHandler.GetTransactionHistory)
-	// }
+	// Wallet endpoints for managing user's wallet, deposits, withdrawals, and transaction history.
+	//
+	// AUTHENTICATION:
+	// All wallet routes require authentication (auth middleware applied to group).
+	// User can only access their own wallet (enforced by extracting user_id from JWT).
+	//
+	// ENDPOINTS:
+	//   GET  /wallet             - Get wallet balance and info
+	//   POST /wallet/deposit     - Initiate deposit via payment provider
+	//   POST /wallet/withdraw    - Request withdrawal to bank account
+	//   GET  /wallet/transactions - Get transaction history (paginated, filterable)
+	//
+	// WEBHOOK (PUBLIC):
+	//   POST /webhooks/payment   - Payment provider callback (signature-verified, not in this group)
+	wallet := router.Group("/wallet")
+	wallet.Use(middleware.Auth(cfg)) // All wallet routes require authentication
+	{
+		// GET /api/v1/wallet
+		// Returns user's wallet with main_balance, earnings_balance, currency, etc.
+		// Example response:
+		//   {
+		//     "main_balance": 150000,
+		//     "main_balance_formatted": "₦1,500.00",
+		//     "earnings_balance": 50000,
+		//     "earnings_balance_formatted": "₦500.00",
+		//     "currency": "NGN"
+		//   }
+		wallet.GET("", walletHandler.GetWallet)
+
+		// POST /api/v1/wallet/deposit
+		// Initiates deposit flow with payment provider.
+		// Request body: {"amount_kobo": 150000, "idempotency_key": "optional"}
+		// Returns: {"authorization_url": "https://checkout.paystack.com/...", "reference": "DEP-xxx"}
+		// User is redirected to authorization_url to complete payment.
+		wallet.POST("/deposit", walletHandler.InitiateDeposit)
+
+		// POST /api/v1/wallet/withdraw
+		// Debits wallet and queues payout to bank account.
+		// Request body: {"amount_kobo": 50000, "account_number": "0123456789", "account_name": "John Doe", "bank_code": "058", "bank_name": "GTBank"}
+		// Returns: Transaction record with status "pending"
+		// Actual payout processed asynchronously by worker.
+		wallet.POST("/withdraw", walletHandler.RequestWithdrawal)
+
+		// GET /api/v1/wallet/transactions?type=deposit&status=completed&page=1&limit=20
+		// Returns paginated transaction history with optional filters.
+		// Query parameters:
+		//   - type: Filter by transaction type (deposit, withdrawal, credit, debit)
+		//   - status: Filter by status (pending, completed, failed)
+		//   - page: Page number (default: 1)
+		//   - limit: Items per page (default: 20, max: 100)
+		// Returns: {"transactions": [...], "total": 42, "page": 1, "pages": 3}
+		wallet.GET("/transactions", walletHandler.GetTransactions)
+	}
 
 	// ───────────────────────────────────────────────────────────────────
 	// PROPERTY ROUTES (Milestone 4)
@@ -178,9 +225,36 @@ func RegisterRoutes(
 	// ───────────────────────────────────────────────────────────────────
 	// WEBHOOK ROUTES (public but signature-verified)
 	// ───────────────────────────────────────────────────────────────────
-	// webhooks := router.Group("/webhooks")
-	// {
-	//     webhooks.POST("/paystack", webhookHandler.Paystack)
-	//     // webhooks.POST("/flutterwave", webhookHandler.Flutterwave)
-	// }
+	// Webhooks are called by external systems (payment providers, etc.) to notify
+	// us of events. They do NOT use JWT authentication - instead they use
+	// cryptographic signature verification.
+	//
+	// SECURITY:
+	//   - NO auth middleware (external systems can't get JWT tokens)
+	//   - Signature verification in handler (HMAC-SHA512 with secret key)
+	//   - Always verify with provider API (never trust webhook alone)
+	//   - Rate limiting recommended (prevent webhook spam attacks)
+	//
+	// IDEMPOTENCY:
+	//   - Webhooks may be delivered multiple times (provider retries)
+	//   - Handlers must be idempotent (safe to process same webhook twice)
+	//   - Check for duplicate processing before taking action
+	webhooks := router.Group("/webhooks")
+	{
+		// POST /api/v1/webhooks/payment
+		// Called by payment provider (Paystack, Flutterwave) when payment completes.
+		// Headers: X-Paystack-Signature (or provider-specific signature header)
+		// Body: Provider-specific payload with payment reference and status
+		//
+		// Handler responsibilities:
+		//   1. Verify signature (proves webhook is from provider)
+		//   2. Extract payment reference
+		//   3. Verify payment with provider API (server-side verification)
+		//   4. Credit wallet if payment successful (idempotent)
+		//   5. Return 200 OK (so provider stops retrying)
+		//
+		// This is a PUBLIC endpoint - anyone can POST to it.
+		// Security relies on signature verification, not authentication.
+		webhooks.POST("/payment", walletHandler.HandleWebhook)
+	}
 }

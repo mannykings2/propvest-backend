@@ -19,3 +19,26 @@ func HealthCheck(c *gin.Context) {
 		"version": "1.0.0",
 	})
 }
+
+// ReadyCheck is a readiness probe for orchestrators like Kubernetes.
+// Unlike HealthCheck (liveness), this checks if the service is ready to serve traffic.
+// It verifies dependencies like database connectivity.
+//
+// In production, this is used by:
+//   - Kubernetes readiness probes (decides if pod should receive traffic)
+//   - Load balancers (decides if instance is ready for requests)
+//   - Deployment systems (waits for this before marking deployment complete)
+//
+// TODO: Add actual dependency checks (database, cache, message queue)
+func ReadyCheck(c *gin.Context) {
+	// TODO: Check database connection
+	// TODO: Check cache connection
+	// TODO: Check message queue connection
+	
+	// For now, return ready if the server is running
+	response.Success(c, gin.H{
+		"status":  "ready",
+		"service": "propvest-api",
+		"version": "1.0.0",
+	})
+}

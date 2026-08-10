@@ -1,7 +1,7 @@
 # 📚 PropVest API Endpoints Reference
 
 ## Complete API Documentation for Postman Testing
-**Version:** Milestones 0-2 Complete (2026-08-05)
+**Version:** Milestones 0-3 Complete (2026-08-05)
 
 ---
 
@@ -39,6 +39,13 @@ http://localhost:8080/api/v1
 | Change Password | `/users/password` | PATCH | Yes |
 | Request Phone Change | `/users/phone/request` | POST | Yes |
 | Verify Phone Change | `/users/phone/verify` | POST | Yes |
+| **Wallet** |
+| Get Wallet | `/wallet` | GET | Yes |
+| Initiate Deposit | `/wallet/deposit` | POST | Yes |
+| Request Withdrawal | `/wallet/withdraw` | POST | Yes |
+| Get Transactions | `/wallet/transactions` | GET | Yes |
+| **Webhooks** |
+| Payment Webhook | `/webhooks/payment` | POST | No (signature-verified) |
 
 ---
 
@@ -501,6 +508,371 @@ Content-Type: application/json
 
 ---
 
+## 💰 Wallet Endpoints (Milestone 3)
+
+### 13. Get Wallet
+
+**Endpoint:** `GET {{base_url}}/wallet`
+
+**Description:** Retrieve user's wallet with current balances
+
+**Headers:**
+```
+Authorization: Bearer {{access_token}}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Request successful",
+  "data": {
+    "id": "wallet-uuid",
+    "main_balance": 150000,
+    "main_balance_formatted": "₦1,500.00",
+    "earnings_balance": 50000,
+    "earnings_balance_formatted": "₦500.00",
+    "currency": "NGN",
+    "virtual_acct_no": null,
+    "virtual_bank": null,
+    "created_at": "2026-08-05T..."
+  }
+}
+```
+
+**Notes:**
+- Balances are in kobo (₦1 = 100 kobo)
+- main_balance: Available for withdrawal/investment
+- earnings_balance: Profits from investments (auto-credited)
+- Wallet created automatically during registration
+
+---
+
+### 14. Initiate Deposit
+
+**Endpoint:** `POST {{base_url}}/wallet/deposit`
+
+**Description:** Start deposit flow with payment provider
+
+**Headers:**
+```
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "amount_kobo": 150000,
+  "idempotency_key": "optional-unique-key"
+}
+```
+
+**Parameters:**
+- `amount_kobo` (required): Amount in kobo (₦1,500 = 150000)
+- `idempotency_key` (optional): Prevents duplicate deposits
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Request successful",
+  "data": {
+    "authorization_url": "https://mock-provider.com/pay/DEP-abc123",
+    "access_code": null,
+    "reference": "DEP-abc123-uuid",
+    "amount_kobo": 150000,
+    "amount_formatted": "₦1,500.00"
+  }
+}
+```
+
+**Next Steps:**
+1. Redirect user to `authorization_url`
+2. User completes payment on provider's page
+3. Provider sends webhook to backend
+4. Wallet credited automatically
+
+**Testing with Mock Provider:**
+1. Call this endpoint → get reference
+2. Manually call webhook endpoint (see #17)
+3. Check wallet balance updated
+
+**Validation:**
+- Minimum amount: ₦100 (10000 kobo)
+- Maximum amount: ₦5,000,000 (500000000 kobo)
+
+---
+
+### 15. Request Withdrawal
+
+**Endpoint:** `POST {{base_url}}/wallet/withdraw`
+
+**Description:** Withdraw funds to bank account
+
+**Headers:**
+```
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "amount_kobo": 50000,
+  "account_number": "0123456789",
+  "account_name": "John Doe",
+  "bank_code": "058",
+  "bank_name": "GTBank"
+}
+```
+
+**Parameters:**
+- `amount_kobo` (required): Amount to withdraw
+- `account_number` (required): 10-digit Nigerian bank account
+- `account_name` (required): Account holder name
+- `bank_code` (required): 3-digit bank code (e.g., "058" for GTBank)
+- `bank_name` (required): Bank name for display
+
+**Common Bank Codes:**
+- GTBank: 058
+- Access Bank: 044
+- Zenith: 057
+- First Bank: 011
+- UBA: 033
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Withdrawal initiated successfully",
+  "data": {
+    "id": "transaction-uuid",
+    "reference": "WDR-abc123",
+    "type": "withdrawal",
+    "amount": 50000,
+    "amount_formatted": "₦500.00",
+    "status": "pending",
+    "balance_before": 150000,
+    "balance_after": 100000,
+    "description": "Withdrawal to GTBank - 0123456789",
+    "metadata": {
+      "account_number": "0123456789",
+      "account_name": "John Doe",
+      "bank_code": "058",
+      "bank_name": "GTBank"
+    },
+    "created_at": "2026-08-05T..."
+  }
+}
+```
+
+**What Happens:**
+1. Balance debited immediately
+2. Transaction created with status "pending"
+3. Payout queued for worker processing
+4. Worker processes payout to bank (async)
+5. Status updated to "completed" or "failed"
+
+**Validation:**
+- Minimum withdrawal: ₦500 (50000 kobo)
+- Maximum per transaction: ₦1,000,000
+- Must have sufficient balance
+- Account number must be 10 digits
+
+**Errors:**
+- `insufficient_balance`: Balance too low
+- `amount_too_small`: Below minimum (₦500)
+- `invalid_bank_account`: Invalid account format
+
+---
+
+### 16. Get Transaction History
+
+**Endpoint:** `GET {{base_url}}/wallet/transactions`
+
+**Description:** Retrieve paginated transaction history
+
+**Headers:**
+```
+Authorization: Bearer {{access_token}}
+```
+
+**Query Parameters:**
+- `type` (optional): Filter by type (`deposit`, `withdrawal`, `credit`, `debit`)
+- `status` (optional): Filter by status (`pending`, `completed`, `failed`)
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Items per page (default: 20, max: 100)
+
+**Example Request:**
+```
+GET {{base_url}}/wallet/transactions?type=deposit&status=completed&page=1&limit=10
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Request successful",
+  "data": {
+    "transactions": [
+      {
+        "id": "uuid",
+        "reference": "DEP-abc123",
+        "type": "deposit",
+        "amount": 150000,
+        "amount_formatted": "₦1,500.00",
+        "status": "completed",
+        "balance_before": 0,
+        "balance_after": 150000,
+        "description": "Deposit via Mock Provider",
+        "metadata": {
+          "provider": "mock",
+          "provider_reference": "DEP-abc123"
+        },
+        "created_at": "2026-08-05T10:00:00Z"
+      },
+      {
+        "id": "uuid",
+        "reference": "WDR-xyz789",
+        "type": "withdrawal",
+        "amount": 50000,
+        "amount_formatted": "₦500.00",
+        "status": "pending",
+        "balance_before": 150000,
+        "balance_after": 100000,
+        "description": "Withdrawal to GTBank - 0123456789",
+        "metadata": {
+          "account_number": "0123456789",
+          "bank_code": "058"
+        },
+        "created_at": "2026-08-05T11:00:00Z"
+      }
+    ],
+    "total": 2,
+    "page": 1,
+    "limit": 10,
+    "pages": 1
+  }
+}
+```
+
+**Transaction Types:**
+- `deposit`: Money added via payment provider
+- `withdrawal`: Money sent to bank account
+- `credit`: Manual credit (admin action, refund, earnings)
+- `debit`: Manual debit (admin action, fee)
+
+**Transaction Status:**
+- `pending`: Not yet processed
+- `completed`: Successfully processed
+- `failed`: Processing failed
+
+**Pagination:**
+- Returns max 100 items per page
+- Use `page` and `limit` for navigation
+- `pages` shows total pages available
+- `total` shows total matching records
+
+---
+
+## 🔔 Webhook Endpoints
+
+### 17. Payment Webhook
+
+**Endpoint:** `POST {{base_url}}/webhooks/payment`
+
+**Description:** Called by payment provider when payment completes (PUBLIC endpoint)
+
+**Security:** Uses signature verification instead of JWT
+
+**Headers:**
+```
+X-Paystack-Signature: hmac_sha512_signature
+Content-Type: application/json
+```
+
+**Body (Mock Provider):**
+```json
+{
+  "event": "charge.success",
+  "data": {
+    "reference": "DEP-abc123-uuid",
+    "amount": 150000,
+    "currency": "NGN",
+    "status": "success"
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Webhook processed successfully"
+}
+```
+
+**How to Test with Mock Provider:**
+
+1. **Initiate Deposit** (get reference):
+```bash
+POST /wallet/deposit
+{ "amount_kobo": 150000 }
+→ Response: { "reference": "DEP-abc123" }
+```
+
+2. **Simulate Webhook** (mock provider signature):
+```bash
+POST /webhooks/payment
+X-Mock-Signature: (auto-computed by mock)
+{
+  "data": {
+    "reference": "DEP-abc123",
+    "status": "success",
+    "amount": 150000
+  }
+}
+```
+
+3. **Verify Wallet Credited**:
+```bash
+GET /wallet
+→ Balance increased by ₦1,500
+```
+
+**Signature Verification:**
+```javascript
+// Mock provider uses HMAC-SHA512
+const crypto = require('crypto');
+const secret = 'mock-secret-key';
+const body = JSON.stringify(payload);
+const signature = crypto
+  .createHmac('sha512', secret)
+  .update(body)
+  .digest('hex');
+```
+
+**Idempotency:**
+- Safe to call multiple times with same reference
+- Wallet credited only once
+- Duplicate webhooks return 200 OK
+
+**Errors:**
+- `400 Bad Request`: Invalid signature or missing reference
+- `500 Internal Server Error`: Verification failed (temporary)
+
+---
+
+**Errors:**
+- `invalid_otp`: Wrong code
+- `otp_expired`: More than 10 minutes old
+- `otp_already_used`: Already verified
+- `too_many_attempts`: 3 failed attempts
+- `phone_already_exists`: Phone taken by another user
+
+---
+
 ## 🧪 Testing Workflows
 
 ### Workflow 1: Complete Registration Flow
@@ -527,7 +899,34 @@ Content-Type: application/json
 3. Try to refresh (should fail with 401)
 4. Login with new password → Get new tokens
 
-### Workflow 5: Complete User Journey
+### Workflow 5: Wallet Deposit Flow (Mock Provider)
+1. Login → Get access token
+2. Get wallet → Check initial balance (₦0)
+3. Initiate deposit → Get authorization_url and reference
+4. Simulate webhook → POST to /webhooks/payment with reference
+5. Get wallet → Verify balance increased
+6. Get transactions → Verify deposit recorded
+
+### Workflow 6: Wallet Withdrawal Flow
+1. Ensure wallet has balance (do deposit first)
+2. Get wallet → Check current balance
+3. Request withdrawal → Balance debited immediately
+4. Get wallet → Verify balance reduced
+5. Get transactions → Verify withdrawal with status "pending"
+6. (Worker processes payout asynchronously)
+
+### Workflow 7: Complete Wallet Journey
+1. Register → User + wallet created (₦0 balance)
+2. Get wallet → Verify empty wallet
+3. Initiate deposit (₦1,500) → Get reference
+4. Simulate webhook → Credit wallet
+5. Get wallet → Balance = ₦1,500
+6. Request withdrawal (₦500) → Balance = ₦1,000
+7. Get transactions (all) → See deposit + withdrawal
+8. Get transactions (deposits only) → Filter by type
+9. Get transactions (completed only) → Filter by status
+
+### Workflow 8: Complete User Journey
 1. Register → User + wallet created, logged in
 2. Get profile → View initial data
 3. Upload avatar → Update profile picture
@@ -536,7 +935,9 @@ Content-Type: application/json
 6. Verify phone → Complete verification
 7. Change password → Security update
 8. Login with new password → Re-authenticate
-9. Logout all → Clean logout
+9. Get wallet → Check balance
+10. Initiate deposit → Add funds
+11. Logout all → Clean logout
 
 ---
 
@@ -645,11 +1046,17 @@ Requires Cloudinary configuration. Without it:
 - [x] Verify phone change
 
 ### 🔜 Coming in Milestone 3
-- [ ] Get wallet
-- [ ] Deposit funds
-- [ ] Withdraw funds
-- [ ] Transaction history
-- [ ] Payment webhooks
+- [x] Get wallet
+- [x] Deposit funds
+- [x] Withdraw funds
+- [x] Transaction history
+- [x] Payment webhooks
+
+### 🔜 Coming in Milestone 4+
+- [ ] Property listings
+- [ ] Property details
+- [ ] Create investment
+- [ ] Portfolio summary
 
 ---
 
@@ -694,12 +1101,13 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 - `MILESTONE_1_COMPLETE.md` - Authentication implementation details
 - `MILESTONE_2_COMPLETE.md` - User management implementation details
+- `MILESTONE_3_COMPLETE.md` - Wallet system implementation details
 - `SCHEMA_FIXES_COMPLETE.md` - Database migration fixes
 - API Specification: `docs/03-API/3.2-API_SPECIFICATION.md`
 
 ---
 
 **Last Updated:** 2026-08-05  
-**Backend Version:** Milestones 0-2 Complete  
+**Backend Version:** Milestones 0-3 Complete  
 **Database Version:** Migration 000006
 

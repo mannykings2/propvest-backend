@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/dto"
 	"github.com/mannykings2/propvest-backend/internal/response"
 	"github.com/mannykings2/propvest-backend/internal/services"
@@ -152,21 +151,6 @@ func (h *UserHandler) VerifyPhoneChange(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, http.StatusOK, "Phone number updated successfully", user)
-}
-
-// getUserIDFromContext extracts user ID from Gin context
-func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
-	userIDStr, exists := c.Get("user_id")
-	if !exists {
-		return uuid.Nil, nil
-	}
-
-	userIDTyped, ok := userIDStr.(string)
-	if !ok {
-		return uuid.Nil, nil
-	}
-
-	return uuid.Parse(userIDTyped)
 }
 
 // handleError maps service errors to HTTP responses

@@ -1,220 +1,183 @@
 package main
 
 import (
-    "fmt"
-    "log"
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-    "github.com/gin-gonic/gin"
-    "github.com/mannykings2/propvest-backend/internal/config"
-    "github.com/mannykings2/propvest-backend/internal/database"
-    "github.com/mannykings2/propvest-backend/internal/handlers"
-    "github.com/mannykings2/propvest-backend/internal/middleware"
-    "github.com/mannykings2/propvest-backend/internal/repositories"
-    v1 "github.com/mannykings2/propvest-backend/internal/routes/v1"
-    "github.com/mannykings2/propvest-backend/internal/services"
-    "github.com/mannykings2/propvest-backend/internal/utils/cloudinary"
-    "github.com/mannykings2/propvest-backend/internal/utils/sms"
+	"github.com/gin-gonic/gin"
+	"github.com/mannykings2/propvest-backend/internal/audit"
+	"github.com/mannykings2/propvest-backend/internal/config"
+	"github.com/mannykings2/propvest-backend/internal/database"
+	"github.com/mannykings2/propvest-backend/internal/handlers"
+	"github.com/mannykings2/propvest-backend/internal/logger"
+	"github.com/mannykings2/propvest-backend/internal/mailer"
+	"github.com/mannykings2/propvest-backend/internal/middleware"
+	"github.com/mannykings2/propvest-backend/internal/payments"
+	"github.com/mannykings2/propvest-backend/internal/queue"
+	"github.com/mannykings2/propvest-backend/internal/realtime"
+	"github.com/mannykings2/propvest-backend/internal/repositories"
+	v1 "github.com/mannykings2/propvest-backend/internal/routes/v1"
+	"github.com/mannykings2/propvest-backend/internal/services"
+	"github.com/mannykings2/propvest-backend/internal/utils/cloudinary"
+	"github.com/mannykings2/propvest-backend/internal/utils/sms"
 )
 
+// main is the COMPOSITION ROOT: the one place that constructs and wires every
+// dependency. Layers are initialised bottom-up:
+//
+//	config → logger → database → infra (queue/realtime/mailer/payments)
+//	       → repositories → services → handlers → router → HTTP server
+//
+// Nothing below main.go knows about anything above it; each component only
+// receives the collaborators it needs via its constructor.
 func main() {
-	// ══════════════════════════════════════════════════════════════════
-	// MILESTONE 0: FOUNDATION - COMPOSITION ROOT
-	// ══════════════════════════════════════════════════════════════════
-	// This is where EVERY dependency is created and wired together.
-	// This is called the "Composition Root" pattern.
-	//
-	// Why here?
-	//   1. Single source of truth for dependency wiring
-	//   2. Easy to understand the entire application structure
-	//   3. Easy to test (mock any dependency)
-	//   4. Impossible to create hidden dependencies
-	//
-	// Layers are initialized bottom-up:
-	//   Database → Repositories → Services → Handlers → Routes → Server
-
-	// ──────────────────────────────────────────────────────────────────
-	// 1. LOAD CONFIGURATION
-	// ──────────────────────────────────────────────────────────────────
-	// Configuration is always first. If config fails, nothing else works.
-	log.Println("Loading configuration...")
+	// 1. CONFIG — first, because everything depends on it.
 	cfg := config.Load()
 
-	// ──────────────────────────────────────────────────────────────────
-	// 2. CONNECT TO DATABASE
-	// ──────────────────────────────────────────────────────────────────
-	log.Println("Connecting to database...")
-	database.Connect(cfg.DatabaseURL)
+	// 2. LOGGER — structured JSON logs (docs 6.1/6.2). Init as early as possible.
+	logger.Init(cfg.AppEnv)
 
-	// ──────────────────────────────────────────────────────────────────
-	// 3. RUN DATABASE MIGRATIONS
-	// ──────────────────────────────────────────────────────────────────
-	// RunMigrations uses golang-migrate for versioned, reversible migrations.
-	// This is the production-grade approach — explicit SQL migrations
-	// with full rollback support.
-	//
-	// Migration files live in: internal/database/migrations/
-	// To create a new migration:
-	//   make migrate-create name=add_feature
-	//
-	// To apply migrations:
-	//   make migrate-up
-	//
-	// To rollback:
-	//   make migrate-down
-	log.Println("Running database migrations...")
-	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+	// Fail fast on bad configuration (docs 1.1 §10). This also validates the
+	// token TTL strings so a typo can't silently become a 0s TTL (FIX-08).
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
 	}
 
-	// ──────────────────────────────────────────────────────────────────
-	// 4. INITIALIZE REPOSITORIES (Data Access Layer)
-	// ──────────────────────────────────────────────────────────────────
-	// Repositories talk to the database. They receive *gorm.DB via
-	// constructor injection, making them easy to test with mocks.
-	log.Println("Initializing repositories...")
+	logger.Info("starting PropVest API", "env", cfg.AppEnv)
+
+	// 3. DATABASE + MIGRATIONS.
+	database.Connect(cfg)
+	if err := database.RunMigrations(cfg.DatabaseURL); err != nil {
+		logger.Error("failed to run migrations", "error", err)
+		os.Exit(1)
+	}
+
+	// 4. INFRASTRUCTURE ADAPTERS.
+	//
+	// RabbitMQ: used for asynchronous, retryable work (emails, SMS, withdrawal
+	// processing) and for fanning realtime notifications back to the API. If the
+	// broker is unavailable the client runs in a disabled/no-op mode so local dev
+	// works without RabbitMQ (see internal/queue).
+	mq := queue.New(cfg.RabbitMQURL)
+	defer mq.Close()
+
+	// WebSocket hub: keeps track of connected clients and pushes realtime events.
+	hub := realtime.NewHub()
+	go hub.Run()
+
+	// Mailer + payment provider are chosen by config ("mock" in dev).
+	emailSender := mailer.New(cfg)
+	paymentProvider := payments.NewProvider(cfg)
+
+	auditRecorder := audit.NewLogRecorder()
+
+	// 5. REPOSITORIES.
 	userRepo := repositories.NewUserRepository(database.DB)
 	walletRepo := repositories.NewWalletRepository(database.DB)
-	refreshTokenRepo := repositories.NewRefreshTokenRepository(database.DB) // Milestone 1: Authentication
-	otpRepo := repositories.NewOTPVerificationRepository(database.DB)      // Milestone 2: Phone verification
-
-	// Future repositories (Milestone 3+):
+	refreshTokenRepo := repositories.NewRefreshTokenRepository(database.DB)
+	otpRepo := repositories.NewOTPVerificationRepository(database.DB)
+	tokenRepo := repositories.NewVerificationTokenRepository(database.DB)
 	// propertyRepo := repositories.NewPropertyRepository(database.DB)
 	// investmentRepo := repositories.NewInvestmentRepository(database.DB)
 	// notificationRepo := repositories.NewNotificationRepository(database.DB)
+	paymentRepo := repositories.NewPaymentRepository(database.DB)
 
-	// ──────────────────────────────────────────────────────────────────
-	// 5. INITIALIZE SERVICES (Business Logic Layer)
-	// ──────────────────────────────────────────────────────────────────
-	// Services contain business logic. They receive repositories and
-	// config via constructor injection.
-	log.Println("Initializing services...")
-
-	// Initialize utilities
+	// 6. UTILITIES / SERVICES.
 	cloudinaryService, err := cloudinary.NewCloudinaryService(cfg)
 	if err != nil {
-		log.Printf("Warning: Cloudinary not configured: %v", err)
-		// Non-fatal - avatar uploads will fail but other features work
+		logger.Warn("Cloudinary not configured; avatar/image uploads will fail", "error", err)
 	}
+	smsService := sms.NewSMSService(cfg)
 
-	smsService := sms.NewSMSService(cfg) // SMS service (mock in development)
+	// Notification service: writes in-app rows, pushes over WebSocket, and
+	// enqueues email/SMS work onto RabbitMQ.
+	// TODO: Uncomment when notification module is implemented (Milestone 6)
+	// notificationService := services.NewNotificationService(notificationRepo, hub, mq)
 
-	// Initialize services
-	authService := services.NewAuthService(userRepo, walletRepo, refreshTokenRepo, cfg, database.DB)
+	// For now, use nil for notification service in wallet service (it's optional)
+	var notificationService services.NotificationService = nil
+
+	authService := services.NewAuthService(userRepo, walletRepo, refreshTokenRepo, tokenRepo, emailSender, auditRecorder, cfg, database.DB)
 	userService := services.NewUserService(userRepo, otpRepo, refreshTokenRepo, smsService, cloudinaryService, cfg)
-	walletService := services.NewWalletService(walletRepo, userRepo)
+	walletService := services.NewWalletService(walletRepo, userRepo, paymentRepo, paymentProvider, notificationService, mq, cfg, database.DB)
+	// propertyService := services.NewPropertyService(propertyRepo, cloudinaryService, auditRecorder)
+	// investmentService := services.NewInvestmentService(investmentRepo, walletRepo, propertyRepo, notificationService, cfg, database.DB)
+	// adminService := services.NewAdminService(userRepo, propertyRepo, investmentRepo, walletRepo, refreshTokenRepo, auditRecorder)
 
-	// Future services (Milestone 4+):
-	// propertyService := services.NewPropertyService(propertyRepo, userRepo)
-	// investmentService := services.NewInvestmentService(investmentRepo, walletRepo, propertyRepo)
-	// notificationService := services.NewNotificationService(notificationRepo)
-
-	// ──────────────────────────────────────────────────────────────────
-	// 6. INITIALIZE HANDLERS (HTTP Layer)
-	// ──────────────────────────────────────────────────────────────────
-	// Handlers parse HTTP requests and call services.
-	// They receive services via constructor injection.
-	log.Println("Initializing handlers...")
+	// 7. HANDLERS.
 	authHandler := handlers.NewAuthHandler(authService)
 	userHandler := handlers.NewUserHandler(userService)
-
-	// Future handlers (Milestone 3+):
-	// walletHandler := handlers.NewWalletHandler(walletService)
+	walletHandler := handlers.NewWalletHandler(walletService)
 	// propertyHandler := handlers.NewPropertyHandler(propertyService)
+	// investmentHandler := handlers.NewInvestmentHandler(investmentService)
+	// notificationHandler := handlers.NewNotificationHandler(notificationService)
+	// adminHandler := handlers.NewAdminHandler(adminService)
+	// webhookHandler := handlers.NewWebhookHandler(walletService, cfg)
+	// wsHandler := handlers.NewWebSocketHandler(hub, cfg)
 
-	// Silence "unused variable" warnings for now
-	_ = walletService
-
-	// ──────────────────────────────────────────────────────────────────
-	// 7. CONFIGURE GIN ROUTER
-	// ──────────────────────────────────────────────────────────────────
-	// Set Gin mode based on environment
-	if cfg.AppEnv == "production" {
+	// 8. ROUTER + MIDDLEWARE (order matters, docs 4.2 §13 / 1.4 §5).
+	if cfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
-
-	// Create router WITHOUT default middleware
-	// We add our own middleware stack for full control
 	r := gin.New()
+	r.Use(middleware.Recovery())  // catch panics (first)
+	r.Use(middleware.RequestID()) // correlation id
+	r.Use(middleware.Logger())    // structured request log
+	r.Use(middleware.CORS(middleware.ParseAllowedOrigins(cfg.AllowedOrigins)))
 
-	// ──────────────────────────────────────────────────────────────────
-	// 8. REGISTER GLOBAL MIDDLEWARE
-	// ──────────────────────────────────────────────────────────────────
-	// Middleware runs in the order it's registered.
-	// Order matters! Each middleware may depend on previous ones.
-	//
-	// Recommended production order:
-	//   Recovery    → Catch panics (must be first)
-	//   RequestID   → Generate unique request ID (for tracing)
-	//   Logger      → Log every request (needs request ID)
-	//   CORS        → Handle cross-origin requests
-	//   RateLimit   → Prevent abuse (future)
-	//   Auth        → Parse JWT (per-route via middleware.Auth())
-	//   RBAC        → Check permissions (per-route via middleware.RequireRole())
+	// Root-level operational endpoints (not versioned): liveness/readiness.
+	r.GET("/health", handlers.HealthCheck)
+	r.GET("/health/ready", handlers.ReadyCheck)
 
-	log.Println("Registering middleware...")
-	r.Use(middleware.Recovery())   // Must be first to catch all panics
-	r.Use(middleware.RequestID())  // Generate request ID for tracing
-	r.Use(middleware.Logger())     // Log all requests
-
-	// Parse CORS allowed origins from config
-	allowedOrigins := middleware.ParseAllowedOrigins(cfg.AllowedOrigins)
-	r.Use(middleware.CORS(allowedOrigins))
-
-	// Future middleware (Milestone 1+):
-	// r.Use(middleware.RateLimit())
-
-	// ──────────────────────────────────────────────────────────────────
-	// 9. REGISTER API ROUTES
-	// ──────────────────────────────────────────────────────────────────
-	// All routes are under /api/v1
-	// Route registration is delegated to the routes package
-	log.Println("Registering routes...")
 	apiV1 := r.Group("/api/v1")
-	v1.RegisterRoutes(apiV1, authHandler, userHandler, cfg)
+	v1.RegisterRoutes(apiV1, authHandler, userHandler, walletHandler, cfg)
 
-	// Future: When we add v2, we create a new routes package
-	// apiV2 := r.Group("/api/v2")
-	// v2.RegisterRoutes(apiV2, authHandler, userHandler, cfg)
+	// 9. START THE API PROCESS'S REALTIME CONSUMER.
+	// The worker (and webhook path) publish "realtime notification" messages to
+	// RabbitMQ; the API process consumes them and fans them out to connected
+	// WebSocket clients. This lets a separate worker trigger realtime pushes.
+	// TODO: Uncomment when notification module is implemented (Milestone 6)
+	// notificationService.StartRealtimeConsumer(context.Background())
 
-	// ──────────────────────────────────────────────────────────────────
-	// 10. START HTTP SERVER
-	// ──────────────────────────────────────────────────────────────────
-	addr := fmt.Sprintf(":%s", cfg.Port)
-	log.Printf("✓ PropVest API successfully initialized")
-	log.Printf("✓ Environment: %s", cfg.AppEnv)
-	log.Printf("✓ Database: Connected")
-	log.Printf("✓ Migrations: Applied")
-	log.Printf("✓ Server starting on %s", addr)
-	log.Println("──────────────────────────────────────────────────────")
-
-	if err := r.Run(addr); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+	// 10. HTTP SERVER with timeouts + graceful shutdown (FIX-07).
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%s", cfg.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-}
 
-// ══════════════════════════════════════════════════════════════════════
-// TEACHING NOTES: Why Dependency Injection?
-// ══════════════════════════════════════════════════════════════════════
-//
-// BEFORE (tight coupling):
-//   func RegisterUser(email, password string) {
-//       db := database.DB  // Global variable!
-//       user := &User{...}
-//       db.Create(user)    // Impossible to test without real database
-//   }
-//
-// AFTER (dependency injection):
-//   func (s *AuthService) RegisterUser(ctx context.Context, email, password string) {
-//       user := &User{...}
-//       s.userRepo.Create(ctx, user)  // Can be mocked in tests!
-//   }
-//
-// Benefits:
-//   1. Testability: Mock any dependency
-//   2. Flexibility: Swap implementations without changing code
-//   3. Clarity: All dependencies are explicit
-//   4. Modularity: Each component is independent
-//
-// The only place that knows about ALL dependencies is main.go.
-// Everything else only knows about its immediate dependencies.
-// ══════════════════════════════════════════════════════════════════════
+	go func() {
+		logger.Info("HTTP server listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Block until we receive an interrupt/terminate signal.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+
+	logger.Info("shutdown signal received; draining connections")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("graceful shutdown failed", "error", err)
+	}
+	if sqlDB, derr := database.DB.DB(); derr == nil {
+		_ = sqlDB.Close()
+	}
+	logger.Info("shutdown complete")
+}

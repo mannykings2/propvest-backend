@@ -20,6 +20,21 @@ type WalletRepository interface {
 	CreateTransaction(ctx context.Context, tx *models.WalletTransaction) error
 	GetTransactions(ctx context.Context, walletID uuid.UUID, limit, offset int) ([]models.WalletTransaction, error)
 	GetTransactionByReference(ctx context.Context, reference string) (*models.WalletTransaction, error)
+
+	// The following were previously implemented on the concrete type but were
+	// unreachable because they weren't on the interface (handoff item P3). They
+	// are exactly what the wallet/investment services need, so they are exposed
+	// here now.
+
+	// FindByUserIDForUpdate locks the wallet row (SELECT ... FOR UPDATE) inside a
+	// transaction to serialize concurrent balance changes.
+	FindByUserIDForUpdate(ctx context.Context, userID uuid.UUID, tx *gorm.DB) (*models.Wallet, error)
+	// TransactionExists reports whether a ledger row with the reference exists
+	// (idempotency check).
+	TransactionExists(ctx context.Context, reference string) (bool, error)
+	// ListTransactions returns filtered, paginated ledger rows for a user plus a
+	// total count for pagination metadata.
+	ListTransactions(ctx context.Context, userID uuid.UUID, txType, status string, limit, offset int) ([]models.WalletTransaction, int64, error)
 }
 
 type walletRepository struct {
@@ -177,4 +192,28 @@ func (r *walletRepository) TransactionExists(ctx context.Context, reference stri
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// ListTransactions returns a filtered, paginated slice of a user's ledger rows
+// (most recent first) plus the total matching count for pagination metadata.
+// txType and status are optional filters (empty string = no filter).
+func (r *walletRepository) ListTransactions(ctx context.Context, userID uuid.UUID, txType, status string, limit, offset int) ([]models.WalletTransaction, int64, error) {
+	q := r.WithContext(ctx).Model(&models.WalletTransaction{}).Where("user_id = ?", userID)
+	if txType != "" {
+		q = q.Where("type = ?", txType)
+	}
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var txns []models.WalletTransaction
+	if err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&txns).Error; err != nil {
+		return nil, 0, err
+	}
+	return txns, total, nil
 }

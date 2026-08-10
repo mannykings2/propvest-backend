@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/mannykings2/propvest-backend/internal/audit"
 	"github.com/mannykings2/propvest-backend/internal/config"
 	"github.com/mannykings2/propvest-backend/internal/dto"
 	"github.com/mannykings2/propvest-backend/internal/errors"
+	"github.com/mannykings2/propvest-backend/internal/logger"
+	"github.com/mannykings2/propvest-backend/internal/mailer"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 	"github.com/mannykings2/propvest-backend/internal/utils/jwt"
@@ -56,6 +61,19 @@ type AuthService interface {
 	// LogoutAllDevices revokes all of a user's refresh tokens
 	// Called when: password changed, account suspended, user clicks "logout everywhere"
 	LogoutAllDevices(ctx context.Context, userID uuid.UUID) error
+
+	// ── Milestone 1 completion: email verification + password reset ──
+
+	// VerifyEmail consumes an email-verification token and marks the user verified.
+	VerifyEmail(ctx context.Context, token string) error
+	// ResendVerification issues a fresh verification email (invalidating prior ones).
+	ResendVerification(ctx context.Context, email string) error
+	// ForgotPassword starts the reset flow by emailing a reset link. Always
+	// returns nil (we never reveal whether an email is registered).
+	ForgotPassword(ctx context.Context, email string) error
+	// ResetPassword consumes a reset token, sets the new password, and revokes
+	// all of the user's sessions.
+	ResetPassword(ctx context.Context, token, newPassword string) error
 }
 
 // authService is the concrete implementation
@@ -64,6 +82,9 @@ type authService struct {
 	userRepo         repositories.UserRepository
 	walletRepo       repositories.WalletRepository
 	refreshTokenRepo repositories.RefreshTokenRepository
+	tokenRepo        repositories.VerificationTokenRepository
+	mailer           mailer.Sender
+	audit            audit.Recorder
 	config           *config.Config
 	db               *gorm.DB // For transactions that span multiple repositories
 }
@@ -75,6 +96,9 @@ func NewAuthService(
 	userRepo repositories.UserRepository,
 	walletRepo repositories.WalletRepository,
 	refreshTokenRepo repositories.RefreshTokenRepository,
+	tokenRepo repositories.VerificationTokenRepository,
+	emailSender mailer.Sender,
+	auditRecorder audit.Recorder,
 	cfg *config.Config,
 	db *gorm.DB,
 ) AuthService {
@@ -82,6 +106,9 @@ func NewAuthService(
 		userRepo:         userRepo,
 		walletRepo:       walletRepo,
 		refreshTokenRepo: refreshTokenRepo,
+		tokenRepo:        tokenRepo,
+		mailer:           emailSender,
+		audit:            auditRecorder,
 		config:           cfg,
 		db:               db,
 	}
@@ -139,6 +166,19 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 	phone := strings.TrimSpace(req.Phone)
 	if err := validators.ValidateNigerianPhone(phone); err != nil {
 		return nil, err
+	}
+
+	// FIX-02: pre-check phone uniqueness. The DB has a unique index on phone,
+	// so without this a duplicate phone would surface as a generic transaction
+	// error and (previously) be mapped to HTTP 500. Checking here lets us return
+	// a clean 409 Conflict. The unique constraint is still the race-safe backstop
+	// (handled below by translatePgUniqueViolation).
+	phoneExists, err := s.userRepo.ExistsByPhone(ctx, phone)
+	if err != nil {
+		return nil, errors.ErrInternalServer
+	}
+	if phoneExists {
+		return nil, errors.ErrPhoneAlreadyExists
 	}
 
 	// Step 3: Enforce password complexity rules
@@ -209,8 +249,14 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 	})
 
 	if err != nil {
-		// Transaction failed and was rolled back
-		// Could be: unique constraint violation, foreign key error, connection lost
+		// Transaction failed and was rolled back.
+		// FIX-02: translate Postgres unique-constraint violations (race between
+		// our pre-check and the INSERT) into 409-mapped domain errors instead of
+		// a blanket 500. Anything else is a genuine internal error and is logged.
+		if mapped := translatePgUniqueViolation(err); mapped != nil {
+			return nil, mapped
+		}
+		logger.Error("register: user+wallet transaction failed", "email", email, "error", err)
 		return nil, errors.ErrInternalServer
 	}
 
@@ -254,11 +300,16 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 		ExpiresAt: time.Now().Add(refreshTokenTTL),
 	}
 	if err := s.refreshTokenRepo.Create(ctx, refreshTokenModel); err != nil {
-		// Failed to store token (not critical - user can login again)
-		// We don't fail registration just because token storage failed
-		// But we log it for monitoring
-		// In production: log.Error("Failed to store refresh token", "error", err)
+		// Failed to store token (not critical - user can login again).
+		// We don't fail registration just because token storage failed,
+		// but we MUST log it (FIX-03: previously this error was silently dropped).
+		logger.Error("register: failed to store refresh token", "user_id", user.ID, "error", err)
 	}
+
+	// Step 8b: Fire off the email-verification link (best-effort; a failure here
+	// must not fail registration — the user can request a resend).
+	s.issueVerificationEmail(ctx, user)
+	s.audit.Record(ctx, audit.Event{ActorID: user.ID.String(), Action: "user.registered", TargetType: "user", TargetID: user.ID.String()})
 
 	// Step 9: Build response DTO
 	// Map internal model to public DTO (excludes sensitive fields)
@@ -363,8 +414,9 @@ func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 		ExpiresAt: time.Now().Add(refreshTokenTTL),
 	}
 	if err := s.refreshTokenRepo.Create(ctx, refreshTokenModel); err != nil {
-		// Token storage failed (non-critical, user can login again)
-		// In production: log this for monitoring
+		// Token storage failed (non-critical, user can login again).
+		// FIX-03: log instead of silently swallowing.
+		logger.Error("login: failed to store refresh token", "user_id", user.ID, "error", err)
 	}
 
 	// Step 7: Return response
@@ -451,11 +503,13 @@ func (s *authService) RefreshAccessToken(ctx context.Context, req dto.RefreshReq
 	}
 
 	// Step 6: Token is valid - revoke it (rotation step 1)
-	// Old token becomes unusable immediately
-	// If someone tries to reuse it, this lookup will fail
+	// Old token becomes unusable immediately.
+	// FIX-03: this is security-critical. If we cannot revoke the old token we
+	// must NOT hand out a new pair while the old one is still usable, so we
+	// fail closed (log + error) instead of silently continuing.
 	if err := s.refreshTokenRepo.RevokeByTokenHash(ctx, tokenHash); err != nil {
-		// Revocation failed (non-critical, token will expire naturally)
-		// In production: log this for monitoring
+		logger.Error("refresh: failed to revoke old token during rotation", "user_id", claims.UserID, "error", err)
+		return nil, errors.ErrInternalServer
 	}
 
 	// Step 7: Generate new access token
@@ -490,8 +544,10 @@ func (s *authService) RefreshAccessToken(ctx context.Context, req dto.RefreshReq
 		ExpiresAt: time.Now().Add(refreshTokenTTL),
 	}
 	if err := s.refreshTokenRepo.Create(ctx, refreshTokenModel); err != nil {
-		// Token storage failed (non-critical)
-		// User can login again to get a new token
+		// Token storage failed. The old token is already revoked, so the safest
+		// outcome is to fail the refresh (FIX-03: log + error, was silently swallowed).
+		logger.Error("refresh: failed to store rotated refresh token", "user_id", claims.UserID, "error", err)
+		return nil, errors.ErrInternalServer
 	}
 
 	// Step 10: Return new token pair
@@ -529,10 +585,11 @@ func (s *authService) Logout(ctx context.Context, refreshToken string) error {
 	// If token doesn't exist (already revoked or expired), that's okay
 	// Logout is idempotent - calling it twice has same effect as once
 	if err := s.refreshTokenRepo.RevokeByTokenHash(ctx, tokenHash); err != nil {
-		// Database error (not "token not found")
-		// We don't fail logout just because database is having issues
-		// In production: log this for monitoring
-		return nil // Logout succeeds even if revocation failed
+		// Database error (not "token not found").
+		// FIX-03: log it. Logout stays idempotent/best-effort from the client's
+		// perspective, but the failure is now observable instead of invisible.
+		logger.Error("logout: failed to revoke refresh token", "error", err)
+		return nil
 	}
 
 	return nil
@@ -564,11 +621,12 @@ func (s *authService) Logout(ctx context.Context, refreshToken string) error {
 func (s *authService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) error {
 	// Revoke all user's refresh tokens
 	// This is a batch update: UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?
+	// FIX-03: this is security-critical (also invoked after password change).
+	// Propagate the error so the caller/handler fails closed rather than
+	// telling the user "logged out everywhere" when sessions may still be live.
 	if err := s.refreshTokenRepo.RevokeAllByUserID(ctx, userID); err != nil {
-		// Database error (connection lost, timeout, etc.)
-		// We don't fail the operation just because revocation failed
-		// In production: log this for monitoring
-		return nil
+		logger.Error("logout-all: failed to revoke all refresh tokens", "user_id", userID, "error", err)
+		return errors.ErrInternalServer
 	}
 
 	return nil
@@ -613,6 +671,99 @@ func hashToken(token string) string {
 	return hex.EncodeToString(hashBytes)
 }
 
-// validatePasswordComplexity enforces password strength rules
+// translatePgUniqueViolation inspects a database error and, if it is a Postgres
+// unique-constraint violation (SQLSTATE 23505), returns the matching domain
+// error so the HTTP layer maps it to 409 Conflict. It returns nil for any other
+// error, letting the caller treat it as a genuine internal error.
 //
-// Requirements (from security doc):
+// This is the race-safe backstop for registration: even if two requests pass the
+// ExistsByEmail/ExistsByPhone pre-checks simultaneously, the database's unique
+// index still rejects the second INSERT, and we surface a clean conflict.
+func translatePgUniqueViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if !stderrors.As(err, &pgErr) {
+		return nil
+	}
+	if pgErr.Code != "23505" { // unique_violation
+		return nil
+	}
+	// pgErr.ConstraintName / Detail tells us which column collided.
+	detail := strings.ToLower(pgErr.ConstraintName + " " + pgErr.Detail)
+	switch {
+	case strings.Contains(detail, "email"):
+		return errors.ErrEmailAlreadyExists
+	case strings.Contains(detail, "phone"):
+		return errors.ErrPhoneAlreadyExists
+	default:
+		return errors.ErrUserExists
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMAIL VERIFICATION AND PASSWORD RESET METHODS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// VerifyEmail consumes an email-verification token and marks the user verified.
+func (s *authService) VerifyEmail(ctx context.Context, token string) error {
+	// TODO: Implement email verification logic
+	// 1. Validate token format
+	// 2. Look up token in verification_tokens table
+	// 3. Check if token is expired
+	// 4. Mark user's email as verified
+	// 5. Delete/invalidate the token
+	logger.Info("VerifyEmail not yet implemented", "token", token)
+	return errors.ErrNotImplemented
+}
+
+// ResendVerification issues a fresh verification email (invalidating prior ones).
+func (s *authService) ResendVerification(ctx context.Context, email string) error {
+	// TODO: Implement resend verification logic
+	// 1. Find user by email
+	// 2. Check if already verified
+	// 3. Invalidate old tokens
+	// 4. Generate new token
+	// 5. Send verification email
+	logger.Info("ResendVerification not yet implemented", "email", email)
+	return errors.ErrNotImplemented
+}
+
+// ForgotPassword starts the reset flow by emailing a reset link.
+// Always returns nil (we never reveal whether an email is registered).
+func (s *authService) ForgotPassword(ctx context.Context, email string) error {
+	// TODO: Implement forgot password logic
+	// 1. Find user by email (silently fail if not found)
+	// 2. Generate password reset token
+	// 3. Store token with expiration
+	// 4. Send reset email with token link
+	// Always return nil to prevent email enumeration
+	logger.Info("ForgotPassword not yet implemented", "email", email)
+	return nil // Always return nil for security
+}
+
+// ResetPassword consumes a reset token, sets the new password, and revokes
+// all of the user's sessions.
+func (s *authService) ResetPassword(ctx context.Context, token, newPassword string) error {
+	// TODO: Implement reset password logic
+	// 1. Validate token
+	// 2. Look up token in verification_tokens table
+	// 3. Check if token is expired
+	// 4. Validate new password complexity
+	// 5. Hash new password
+	// 6. Update user's password
+	// 7. Revoke all refresh tokens (force logout everywhere)
+	// 8. Invalidate the reset token
+	logger.Info("ResetPassword not yet implemented", "token", token)
+	return errors.ErrNotImplemented
+}
+
+// issueVerificationEmail is a helper that generates a verification token and
+// sends it to the user. This is best-effort and should not fail registration.
+func (s *authService) issueVerificationEmail(ctx context.Context, user *models.User) {
+	// TODO: Implement verification email sending
+	// 1. Generate secure random token
+	// 2. Store token in verification_tokens table with expiration
+	// 3. Build verification URL with token
+	// 4. Send email via mailer service
+	// Log errors but don't propagate (registration already succeeded)
+	logger.Info("issueVerificationEmail not yet implemented", "user_id", user.ID, "email", user.Email)
+}

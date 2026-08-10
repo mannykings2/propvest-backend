@@ -19,11 +19,13 @@ package dto
 type RegisterRequest struct {
 	FullName string `json:"full_name" binding:"required,min=2,max=100"  example:"Chukwuemeka Obi"`
 	Email    string `json:"email"     binding:"required,email"           example:"chukwuemeka@example.com"`
-	Password string `json:"password"  binding:"required,min=8,max=72"   example:"SecurePass123!"`
-	// max=72 on password is intentional — bcrypt silently truncates input
-	// beyond 72 bytes. Setting the max here makes that behaviour explicit
-	// and prevents user confusion ("my 100-char password works but only
-	// the first 72 chars are checked").
+	Password string `json:"password"  binding:"required,min=12,max=72"   example:"SecurePass123!"`
+	// min=12,max=72 mirrors the real password policy enforced by
+	// validators.ValidatePasswordComplexity in the service layer. Keeping
+	// the binding tag in sync with the policy means the client gets a fast,
+	// accurate 400 at bind time instead of a confusing service-layer error
+	// (this was FIX-01: the tag previously said min=8 while the policy is 12).
+	// max=72 is a bcrypt limit — bcrypt silently truncates beyond 72 bytes.
 	Phone string `json:"phone" binding:"required,min=10,max=15" example:"+2348012345678"`
 	// Phone is required at registration and must be in E.164 format (+2348012345678).
 	// We validate Nigerian phone numbers specifically in the service layer.
@@ -47,7 +49,12 @@ type RegisterResponse struct {
 // Intentionally minimal — email and password only.
 type LoginRequest struct {
 	Email    string `json:"email"    binding:"required,email"        example:"chukwuemeka@example.com"`
-	Password string `json:"password" binding:"required,min=8,max=72" example:"SecurePass123!"`
+	Password string `json:"password" binding:"required"              example:"SecurePass123!"`
+	// Login intentionally only requires that the password is present. We do
+	// NOT re-apply the min/max complexity rules here: the password policy can
+	// change over time, and enforcing length on login could lock out a user
+	// whose (valid) stored password predates a policy change. bcrypt.Verify
+	// is the real gate.
 }
 
 // LoginResponse is what the client receives after successful login.
@@ -93,4 +100,39 @@ type RefreshResponse struct {
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
+}
+
+// ─────────────────────────────────────────────
+// EMAIL VERIFICATION  (Milestone 1 completion)
+// ─────────────────────────────────────────────
+
+// VerifyEmailRequest carries the token from the verification email link.
+type VerifyEmailRequest struct {
+	Token string `json:"token" binding:"required"`
+}
+
+// ResendVerificationRequest asks for a fresh verification email.
+type ResendVerificationRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+// ─────────────────────────────────────────────
+// PASSWORD RESET  (Milestone 1 completion)
+// ─────────────────────────────────────────────
+
+// ForgotPasswordRequest starts the reset flow. We always respond success even if
+// the email is unknown (don't leak which emails are registered).
+type ForgotPasswordRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+// ResetPasswordRequest completes the reset using the emailed token.
+type ResetPasswordRequest struct {
+	Token       string `json:"token" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required,min=12,max=72"`
+}
+
+// MessageResponse is a simple {message} payload for flows that only confirm.
+type MessageResponse struct {
+	Message string `json:"message"`
 }
