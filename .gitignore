@@ -2,3 +2,6 @@
 *.pem
 bin/
 tmp/
+.sql
+.exe
+.md
