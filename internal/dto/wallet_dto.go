@@ -14,6 +14,7 @@ type WalletResponse struct {
 	ID              uuid.UUID `json:"id"`
 	UserID          uuid.UUID `json:"user_id"`
 	MainBalance     int64     `json:"main_balance"`
+	LockedBalance   int64     `json:"locked_balance"`
 	EarningsBalance int64     `json:"earnings_balance"`
 	Currency        string    `json:"currency"`
 	VirtualAcctNo   *string   `json:"virtual_acct_no,omitempty"`
@@ -24,6 +25,7 @@ type WalletResponse struct {
 // WalletSummaryResponse is a lighter version for dashboard widgets.
 type WalletSummaryResponse struct {
 	MainBalance     int64 `json:"main_balance"`
+	LockedBalance   int64 `json:"locked_balance"`
 	EarningsBalance int64 `json:"earnings_balance"`
 }
 

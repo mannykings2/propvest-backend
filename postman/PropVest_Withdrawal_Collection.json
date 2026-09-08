@@ -1,0 +1,447 @@
+{
+  "info": {
+    "name": "PropVest Withdrawal Testing",
+    "description": "Complete withdrawal workflow testing including authentication, wallet operations, and webhook simulation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8081",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "withdrawal_ref",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "1. Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 200\", function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Login successful\", function() {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(true);",
+                  "    pm.expect(jsonData.data).to.have.property('access_token');",
+                  "    ",
+                  "    // Save token to collection variable",
+                  "    pm.collectionVariables.set(\"access_token\", jsonData.data.access_token);",
+                  "    console.log(\"✅ Access token saved!\");",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"testuser@example.com\",\n  \"password\": \"Test1234!\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            },
+            "description": "Login with test user credentials. Access token is automatically saved to collection variables."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Wallet Operations",
+      "item": [
+        {
+          "name": "Get Wallet Balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 200\", function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Wallet data present\", function() {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data).to.have.property('main_balance');",
+                  "    pm.expect(jsonData.data).to.have.property('locked_balance');",
+                  "});",
+                  "",
+                  "// Display balance",
+                  "var data = pm.response.json().data;",
+                  "console.log(`Main Balance: ₦${(data.main_balance/100).toLocaleString()}`);",
+                  "console.log(`Locked: ₦${(data.locked_balance/100).toLocaleString()}`);",
+                  "console.log(`Available: ₦${((data.main_balance - data.locked_balance)/100).toLocaleString()}`);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet"]
+            },
+            "description": "Get current wallet balance including locked funds"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Transaction History",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 200\", function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "console.log(`Total transactions: ${jsonData.data.total}`);",
+                  "if (jsonData.data.transactions.length > 0) {",
+                  "    var latest = jsonData.data.transactions[0];",
+                  "    console.log(`Latest: ${latest.type} - ${latest.status} - ₦${latest.amount/100}`);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/transactions?page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet", "transactions"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "withdrawal",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Get paginated transaction history. Enable query params to filter by type/status."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Withdrawal Flow",
+      "item": [
+        {
+          "name": "Initiate Withdrawal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status is 200\", function() {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"Withdrawal initiated\", function() {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.data.status).to.eql(\"pending\");",
+                  "    pm.expect(jsonData.data.type).to.eql(\"withdrawal\");",
+                  "    ",
+                  "    // Save reference",
+                  "    pm.collectionVariables.set(\"withdrawal_ref\", jsonData.data.reference);",
+                  "    console.log(`✅ Withdrawal initiated: ${jsonData.data.reference}`);",
+                  "    console.log(`Amount: ₦${jsonData.data.amount/100}`);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_kobo\": 5000000,\n  \"account_number\": \"0123456789\",\n  \"account_name\": \"Test User\",\n  \"bank_code\": \"058\",\n  \"bank_name\": \"GTBank\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/withdraw",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet", "withdraw"]
+            },
+            "description": "Initiate a withdrawal. Funds are immediately locked. Reference is saved automatically."
+          },
+          "response": []
+        },
+        {
+          "name": "Check Withdrawal Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "var withdrawal = jsonData.data.transactions.find(t => t.reference === pm.collectionVariables.get('withdrawal_ref'));",
+                  "",
+                  "if (withdrawal) {",
+                  "    console.log(`Status: ${withdrawal.status}`);",
+                  "    console.log(`Amount: ₦${withdrawal.amount/100}`);",
+                  "    ",
+                  "    if (withdrawal.status === 'completed') {",
+                  "        console.log('✅ Withdrawal completed!');",
+                  "    } else if (withdrawal.status === 'failed') {",
+                  "        console.log('❌ Withdrawal failed');",
+                  "    } else {",
+                  "        console.log('⏳ Still pending...');",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/transactions?type=withdrawal",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet", "transactions"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "withdrawal"
+                }
+              ]
+            },
+            "description": "Check status of your withdrawal. Run this every 30 seconds until status changes."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Error Scenarios",
+      "item": [
+        {
+          "name": "Test Insufficient Balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Returns 422\", function() {",
+                  "    pm.response.to.have.status(422);",
+                  "});",
+                  "",
+                  "pm.test(\"Error message present\", function() {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.success).to.eql(false);",
+                  "    pm.expect(jsonData.error).to.include('insufficient');",
+                  "    console.log(`Error: ${jsonData.error}`);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_kobo\": 99999999,\n  \"account_number\": \"0123456789\",\n  \"account_name\": \"Test User\",\n  \"bank_code\": \"058\",\n  \"bank_name\": \"GTBank\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/withdraw",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet", "withdraw"]
+            },
+            "description": "Test validation: requesting more than available balance"
+          },
+          "response": []
+        },
+        {
+          "name": "Test Below Minimum",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Returns 422\", function() {",
+                  "    pm.response.to.have.status(422);",
+                  "});",
+                  "",
+                  "pm.test(\"Minimum amount error\", function() {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.expect(jsonData.error).to.include('minimum');",
+                  "    console.log(`Error: ${jsonData.error}`);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_kobo\": 10000,\n  \"account_number\": \"0123456789\",\n  \"account_name\": \"Test User\",\n  \"bank_code\": \"058\",\n  \"bank_name\": \"GTBank\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/withdraw",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet", "withdraw"]
+            },
+            "description": "Test validation: amount below minimum (₦500)"
+          },
+          "response": []
+        },
+        {
+          "name": "Test Invalid Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Returns error\", function() {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "console.log(`Error: ${jsonData.error}`);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_kobo\": 5000000,\n  \"account_number\": \"0000000000\",\n  \"account_name\": \"Invalid Account\",\n  \"bank_code\": \"058\",\n  \"bank_name\": \"GTBank\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/wallet/withdraw",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "wallet", "withdraw"]
+            },
+            "description": "Test validation: invalid bank account number"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Webhooks",
+      "item": [
+        {
+          "name": "Simulate Success Webhook",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Paystack-Signature",
+                "value": "COMPUTE_WITH_TOOL",
+                "description": "Run: go run tools/trigger_transfer_webhook.go"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"transfer.success\",\n  \"data\": {\n    \"reference\": \"{{withdrawal_ref}}\",\n    \"transfer_code\": \"TRF_test123\",\n    \"status\": \"success\",\n    \"amount\": 5000000,\n    \"currency\": \"NGN\",\n    \"recipient\": {\n      \"type\": \"nuban\",\n      \"account_number\": \"0123456789\",\n      \"bank_code\": \"058\",\n      \"bank_name\": \"GTBank Plc\"\n    },\n    \"createdAt\": \"2026-09-06T12:00:00Z\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/webhooks/paystack/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "webhooks", "paystack", "transfer"]
+            },
+            "description": "⚠️ Requires valid HMAC signature. Use tool: go run tools/trigger_transfer_webhook.go --reference WD-xxx --event success"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -131,6 +131,12 @@ func main() {
 	r.Use(middleware.RequestID()) // correlation id
 	r.Use(middleware.Logger())    // structured request log
 	r.Use(middleware.CORS(middleware.ParseAllowedOrigins(cfg.AllowedOrigins)))
+	r.Use(middleware.SecurityHeaders(cfg.IsProduction())) // security headers
+	r.Use(middleware.RateLimit(middleware.RateLimitConfig{
+		AnonymousLimit:     100, // 100 requests per minute for anonymous
+		AuthenticatedLimit: 300, // 300 requests per minute for authenticated
+		AuthEndpointLimit:  10,  // 10 requests per minute for login/register
+	}))
 
 	// Root-level operational endpoints (not versioned): liveness/readiness.
 	r.GET("/health", handlers.HealthCheck)

@@ -126,6 +126,92 @@ type Provider interface {
 	// CRITICAL SECURITY RULE:
 	// ALWAYS verify signature BEFORE processing webhook data!
 	VerifyWebhookSignature(signature string, body []byte) bool
+
+	// ═══════════════════════════════════════════════════════════════════
+	// WITHDRAWAL / TRANSFER METHODS
+	// ═══════════════════════════════════════════════════════════════════
+
+	// ResolveAccountNumber verifies a bank account and returns the account holder's name.
+	//
+	// WHY RESOLVE ACCOUNTS?
+	// Before sending money to a bank account, we MUST verify:
+	//   1. Account exists (prevents money going to invalid accounts)
+	//   2. Account name matches user input (prevents typos/fraud)
+	//
+	// WHAT HAPPENS:
+	//   1. User enters: Account "0123456789", Bank "058" (GTBank), Name "John Doe"
+	//   2. We call ResolveAccountNumber("0123456789", "058")
+	//   3. Provider queries NIP (Nigeria Interbank Settlement System)
+	//   4. NIP returns actual account name from bank: "John D. Doe"
+	//   5. We compare: "John Doe" vs "John D. Doe" (fuzzy match)
+	//   6. If match → proceed with transfer
+	//   7. If different → reject (wrong account or typo)
+	//
+	// PARAMETERS:
+	//   - ctx: Request context
+	//   - accountNumber: 10-digit NUBAN (e.g., "0123456789")
+	//   - bankCode: 3-digit bank code (e.g., "058" for GTBank)
+	//
+	// RETURNS:
+	//   - *AccountResolution: Contains verified account name
+	//   - error: If account doesn't exist or API fails
+	//
+	// BANK CODES (Nigeria):
+	//   Access Bank: "044", GTBank: "058", Zenith: "057", First Bank: "011"
+	//   Full list: https://paystack.com/docs/transfers/single-transfers/#supported-banks
+	ResolveAccountNumber(ctx context.Context, accountNumber, bankCode string) (*AccountResolution, error)
+
+	// InitiateTransfer sends money from our provider balance to a user's bank account.
+	//
+	// WHAT HAPPENS:
+	//   1. User requests withdrawal of ₦5000
+	//   2. We debit their wallet (in our database)
+	//   3. We call InitiateTransfer(₦5000, account details)
+	//   4. Provider debits our provider balance
+	//   5. Provider credits user's bank account (via NIP)
+	//   6. Provider returns transfer status
+	//   7. We update transaction record
+	//
+	// FLOW:
+	//   1. Wallet debited IMMEDIATELY (money leaves user balance)
+	//   2. Transfer status = "pending" (being processed)
+	//   3. Provider processes (1-5 minutes typically)
+	//   4. Status changes to "success" or "failed"
+	//   5. If failed → REVERSAL (credit wallet back)
+	//
+	// PARAMETERS:
+	//   - ctx: Request context
+	//   - req: Transfer details (amount, bank account, reference)
+	//
+	// RETURNS:
+	//   - *TransferResult: Contains transfer status and provider reference
+	//   - error: If API call fails (not if transfer fails - that's in result.Status)
+	//
+	// IMPORTANT:
+	// Transfer can return success but still fail later! Always verify status.
+	InitiateTransfer(ctx context.Context, req *TransferRequest) (*TransferResult, error)
+
+	// VerifyTransfer checks the current status of a transfer.
+	//
+	// WHY VERIFY?
+	// Transfers are asynchronous:
+	//   - InitiateTransfer returns "pending"
+	//   - Actual bank credit happens later (1-5 minutes)
+	//   - Final status: "success", "failed", "reversed"
+	//
+	// WHEN TO CALL:
+	//   1. Worker polls every 1 minute for pending transfers
+	//   2. We receive a transfer webhook (verify it)
+	//   3. User checks withdrawal status
+	//
+	// PARAMETERS:
+	//   - ctx: Request context
+	//   - transferCodeOrReference: Provider's transfer code or our reference
+	//
+	// RETURNS:
+	//   - *TransferResult: Current transfer status
+	//   - error: If API call fails
+	VerifyTransfer(ctx context.Context, transferCodeOrReference string) (*TransferResult, error)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -202,6 +288,81 @@ type VerifyResult struct {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// WITHDRAWAL / TRANSFER TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+
+// AccountResolution is returned by ResolveAccountNumber.
+type AccountResolution struct {
+	// AccountNumber is the 10-digit NUBAN
+	AccountNumber string
+
+	// AccountName is the verified account holder name from the bank
+	// This is the source of truth - always compare user input against this
+	AccountName string
+
+	// BankCode is the 3-digit bank code
+	BankCode string
+
+	// BankName is the human-readable bank name (e.g., "GTBank Plc")
+	BankName string
+}
+
+// TransferRequest is passed to InitiateTransfer.
+type TransferRequest struct {
+	// Amount in kobo
+	Amount int64
+
+	// Recipient bank account details
+	AccountNumber string
+	AccountName   string // For reference/logging
+	BankCode      string
+
+	// Reference is our unique withdrawal reference (WD-ABC123)
+	// Used for idempotency and reconciliation
+	Reference string
+
+	// Reason is a description (e.g., "Wallet withdrawal")
+	Reason string
+
+	// Currency defaults to "NGN"
+	Currency string
+}
+
+// TransferResult is returned by InitiateTransfer and VerifyTransfer.
+type TransferResult struct {
+	// Status: "pending", "success", "failed", "reversed"
+	//
+	// LIFECYCLE:
+	//   pending → being processed by provider/bank
+	//   success → money credited to user's bank account
+	//   failed → transfer rejected (invalid account, insufficient provider balance)
+	//   reversed → transfer was successful but later reversed (rare)
+	Status string
+
+	// TransferCode is the provider's unique ID for this transfer
+	// Use this to verify status later
+	TransferCode string
+
+	// Reference is our internal reference (WD-ABC123)
+	Reference string
+
+	// Amount in kobo
+	Amount int64
+
+	// RecipientName is the account holder name
+	RecipientName string
+
+	// BankName for display
+	BankName string
+
+	// CreatedAt is when transfer was initiated
+	CreatedAt string
+
+	// Reason for failure (if Status == "failed")
+	FailureReason string
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // SUMMARY FOR JUNIOR DEVELOPERS
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -227,12 +388,25 @@ type VerifyResult struct {
 // 8. Backend calls VerifyTransaction() to confirm (never trust webhook alone)
 // 9. If verified, credit user's wallet atomically with transaction record
 //
+// WITHDRAWAL FLOW OVERVIEW:
+// 1. User clicks "Withdraw ₦5000" and enters bank account
+// 2. Backend calls ResolveAccountNumber() → verify account exists & name matches
+// 3. Backend debits wallet in database transaction
+// 4. Backend queues withdrawal job for worker
+// 5. Worker calls InitiateTransfer() → provider sends money to bank
+// 6. Transfer status = "pending" (1-5 minutes to complete)
+// 7. Worker polls VerifyTransfer() every minute
+// 8. When status = "success", mark transaction complete
+// 9. If status = "failed", REVERSE: credit wallet back
+//
 // SECURITY PRINCIPLES:
 // 1. NEVER trust webhooks without signature verification
 // 2. ALWAYS verify payment with provider API (VerifyTransaction)
 // 3. NEVER see or store card details (PCI DSS violation)
 // 4. ALWAYS use HTTPS for API calls (man-in-the-middle protection)
 // 5. ALWAYS verify amount matches what we requested (prevent fraud)
+// 6. ALWAYS resolve account name before transfers (prevent typos/fraud)
+// 7. ALWAYS debit wallet BEFORE initiating transfer (prevent double withdrawals)
 //
 // NEXT FILES:
 // - mock.go: Mock provider for development/testing

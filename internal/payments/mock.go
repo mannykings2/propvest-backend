@@ -6,6 +6,8 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -366,6 +368,210 @@ func (m *MockProvider) VerifyWebhookSignature(signature string, body []byte) boo
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
 }
 
+// ResolveAccountNumber simulates verifying a bank account.
+// In development, this always succeeds with a mock account name.
+//
+// TESTING PATTERNS:
+// You can enhance this to simulate different scenarios based on account number:
+//   - "0000000000" → return error (account not found)
+//   - "1111111111" → return name mismatch
+//   - "2222222222" → simulate API timeout
+//   - Any other → return success with mock name
+//
+// Example usage in tests:
+//   result, err := provider.ResolveAccountNumber(ctx, "0123456789", "058")
+//   assert.NoError(t, err)
+//   assert.Equal(t, "Mock Account Holder", result.AccountName)
+func (m *MockProvider) ResolveAccountNumber(ctx context.Context, accountNumber, bankCode string) (*AccountResolution, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Simulate account not found
+	if accountNumber == "0000000000" {
+		return nil, fmt.Errorf("account not found")
+	}
+
+	// Simulate API error
+	if accountNumber == "9999999999" {
+		return nil, fmt.Errorf("bank API temporarily unavailable")
+	}
+
+	// Map of bank codes to bank names (Nigerian banks)
+	bankNames := map[string]string{
+		"044": "Access Bank",
+		"014": "Afribank",
+		"023": "Citibank",
+		"050": "EcoBank",
+		"084": "Enterprise Bank",
+		"070": "Fidelity Bank",
+		"011": "First Bank",
+		"214": "First City Monument Bank",
+		"058": "Guaranty Trust Bank",
+		"030": "Heritage Bank",
+		"301": "Jaiz Bank",
+		"082": "Keystone Bank",
+		"526": "Parallex Bank",
+		"076": "Polaris Bank",
+		"101": "Providus Bank",
+		"125": "Rubies MFB",
+		"221": "Stanbic IBTC Bank",
+		"068": "Standard Chartered Bank",
+		"232": "Sterling Bank",
+		"100": "Suntrust Bank",
+		"032": "Union Bank",
+		"033": "United Bank for Africa",
+		"215": "Unity Bank",
+		"035": "Wema Bank",
+		"057": "Zenith Bank",
+	}
+
+	bankName := bankNames[bankCode]
+	if bankName == "" {
+		bankName = "Unknown Bank"
+	}
+
+	// Mock returns success with a dummy account name
+	// In tests, you can check if this matches the user's input
+	return &AccountResolution{
+		AccountNumber: accountNumber,
+		AccountName:   "John Doe Mock", // Always returns this name
+		BankCode:      bankCode,
+		BankName:      bankName,
+	}, nil
+}
+
+// InitiateTransfer simulates sending money to a bank account.
+// In development, this immediately returns success without actual money transfer.
+//
+// TESTING PATTERNS:
+// Use the reference to simulate different outcomes:
+//   - Reference starts with "FAIL-" → return failed status
+//   - Reference starts with "PENDING-" → return pending status
+//   - Reference starts with "ERROR-" → return error
+//   - Any other → return success
+//
+// Example usage:
+//   // Test failure scenario
+//   result, err := provider.InitiateTransfer(ctx, &TransferRequest{
+//       Reference: "FAIL-TEST123",
+//       Amount:    50000,
+//   })
+//   assert.NoError(t, err)
+//   assert.Equal(t, "failed", result.Status)
+func (m *MockProvider) InitiateTransfer(ctx context.Context, req *TransferRequest) (*TransferResult, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Validate request
+	if req.Amount <= 0 {
+		return nil, fmt.Errorf("invalid amount: must be positive")
+	}
+	if req.Reference == "" {
+		return nil, fmt.Errorf("reference is required")
+	}
+	if req.AccountNumber == "" {
+		return nil, fmt.Errorf("account number is required")
+	}
+	if req.BankCode == "" {
+		return nil, fmt.Errorf("bank code is required")
+	}
+
+	// Simulate API error based on reference
+	if len(req.Reference) > 6 && req.Reference[:6] == "ERROR-" {
+		return nil, fmt.Errorf("transfer API error: network timeout")
+	}
+
+	// Determine status based on reference prefix
+	status := "success"
+	failureReason := ""
+
+	if len(req.Reference) > 5 && req.Reference[:5] == "FAIL-" {
+		status = "failed"
+		failureReason = "insufficient funds in provider account"
+	} else if len(req.Reference) > 8 && req.Reference[:8] == "PENDING-" {
+		status = "pending"
+	}
+
+	// Generate mock transfer code
+	transferCode := "MOCK_TRF_" + req.Reference
+
+	// Get bank name
+	bankNames := map[string]string{
+		"044": "Access Bank", "058": "GTBank", "057": "Zenith Bank",
+		"011": "First Bank", "033": "United Bank for Africa",
+	}
+	bankName := bankNames[req.BankCode]
+	if bankName == "" {
+		bankName = "Mock Bank"
+	}
+
+	return &TransferResult{
+		Status:        status,
+		TransferCode:  transferCode,
+		Reference:     req.Reference,
+		Amount:        req.Amount,
+		RecipientName: req.AccountName,
+		BankName:      bankName,
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		FailureReason: failureReason,
+	}, nil
+}
+
+// VerifyTransfer simulates checking transfer status.
+// This is called by the worker and webhook handler to check final status.
+//
+// TESTING PATTERNS:
+// Use the transfer code to simulate different states:
+//   - Contains "PENDING" → return pending
+//   - Contains "FAILED" → return failed
+//   - Contains "REVERSED" → return reversed
+//   - Any other → return success
+//
+// In a real workflow:
+//   1. InitiateTransfer returns "pending"
+//   2. Wait a few seconds
+//   3. VerifyTransfer returns "success"
+//
+// For testing, we immediately return success (simulates instant transfer).
+func (m *MockProvider) VerifyTransfer(ctx context.Context, transferCodeOrReference string) (*TransferResult, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Simulate different statuses based on transfer code content
+	status := "success"
+	failureReason := ""
+
+	if strings.Contains(transferCodeOrReference, "PENDING") {
+		status = "pending"
+	} else if strings.Contains(transferCodeOrReference, "FAILED") || strings.Contains(transferCodeOrReference, "FAIL") {
+		status = "failed"
+		failureReason = "transfer failed at bank"
+	} else if strings.Contains(transferCodeOrReference, "REVERSED") {
+		status = "reversed"
+		failureReason = "transfer was reversed"
+	}
+
+	return &TransferResult{
+		Status:        status,
+		TransferCode:  transferCodeOrReference,
+		Reference:     strings.TrimPrefix(transferCodeOrReference, "MOCK_TRF_"),
+		Amount:        0, // We don't store this in mock, would come from DB in real impl
+		RecipientName: "Mock Recipient",
+		BankName:      "Mock Bank",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		FailureReason: failureReason,
+	}, nil
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // USAGE EXAMPLE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -409,6 +615,136 @@ func (m *MockProvider) VerifyWebhookSignature(signature string, body []byte) boo
 //     assert.NoError(t, err)
 //     assert.Contains(t, result.AuthorizationURL, "mock-provider.com")
 // }
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// TESTING WITHDRAWAL FLOW WITH MOCK
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// # 1. Test Account Resolution
+//
+// POST /api/v1/wallet/withdraw
+// {
+//   "amount": 50000,
+//   "bank_code": "058",
+//   "account_number": "0123456789",
+//   "account_name": "John Doe"
+// }
+//
+// Backend calls:
+//   provider.ResolveAccountNumber(ctx, "0123456789", "058")
+//   → Returns: {account_name: "John Doe Mock", bank_name: "GTBank"}
+//
+// Service checks:
+//   if "John Doe" ~= "John Doe Mock" → proceed
+//
+// # 2. Test Withdrawal Initiation
+//
+// Response:
+// {
+//   "id": "uuid",
+//   "reference": "WD-ABC123",
+//   "status": "pending",
+//   "amount": 50000
+// }
+//
+// Database state:
+//   wallets: main_balance=100000, locked_balance=50000
+//   wallet_transactions: status=pending, amount=50000
+//
+// # 3. Test Worker Processing
+//
+// Worker receives message from queue:
+// {
+//   "transaction_id": "uuid",
+//   "reference": "WD-ABC123",
+//   "amount_kobo": 50000
+// }
+//
+// Worker calls:
+//   provider.InitiateTransfer(ctx, &TransferRequest{
+//       Amount: 50000,
+//       AccountNumber: "0123456789",
+//       BankCode: "058",
+//       Reference: "WD-ABC123",
+//   })
+//   → Returns: {status: "success", transfer_code: "MOCK_TRF_WD-ABC123"}
+//
+// # 4. Test Finalization
+//
+// Worker calls:
+//   provider.VerifyTransfer(ctx, "MOCK_TRF_WD-ABC123")
+//   → Returns: {status: "success"}
+//
+// Worker finalizes:
+//   FinalizeWithdrawal(ctx, txnID, "success")
+//
+// Database state:
+//   wallets: main_balance=50000, locked_balance=0
+//   wallet_transactions: status=completed
+//
+// # 5. Test Failure Scenario
+//
+// Use reference prefix "FAIL-" to simulate failure:
+//
+// POST /api/v1/wallet/withdraw
+// {
+//   "amount": 50000,
+//   "reference": "FAIL-TEST123"  // ← triggers failure
+// }
+//
+// Worker processes:
+//   provider.InitiateTransfer(ctx, req)
+//   → Returns: {status: "failed", failure_reason: "insufficient funds"}
+//
+//   provider.VerifyTransfer(ctx, transferCode)
+//   → Returns: {status: "failed"}
+//
+//   FinalizeWithdrawal(ctx, txnID, "failed")
+//
+// Database state (reversal):
+//   wallets: main_balance=100000, locked_balance=0  (← funds returned!)
+//   wallet_transactions: status=failed
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// MOCK TESTING PATTERNS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// # Pattern 1: Test Success Flow
+// reference: "WD-SUCCESS123"
+// → InitiateTransfer returns status="success"
+// → VerifyTransfer returns status="success"
+// → Wallet debited, locked_balance cleared
+//
+// # Pattern 2: Test Failure Flow
+// reference: "FAIL-TEST123"
+// → InitiateTransfer returns status="failed"
+// → VerifyTransfer returns status="failed"
+// → Funds returned to wallet (reversal)
+//
+// # Pattern 3: Test Pending → Success
+// reference: "PENDING-TEST123"
+// → InitiateTransfer returns status="pending"
+// → (wait or simulate webhook)
+// → VerifyTransfer returns status="success"
+// → Wallet debited
+//
+// # Pattern 4: Test API Error
+// reference: "ERROR-TEST123"
+// → InitiateTransfer returns error
+// → Worker retries with exponential backoff
+// → Eventually succeeds or marks as failed
+//
+// # Pattern 5: Test Invalid Account
+// account_number: "0000000000"
+// → ResolveAccountNumber returns error
+// → Withdrawal rejected before locking funds
+//
+// # Pattern 6: Test Account Name Mismatch
+// account_number: "0123456789"
+// account_name: "Jane Smith"
+// → ResolveAccountNumber returns "John Doe Mock"
+// → Service rejects: "Jane Smith" != "John Doe Mock"
+// → Withdrawal rejected before locking funds
 //
 // ═══════════════════════════════════════════════════════════════════════════
 // TESTING WEBHOOK FLOW WITH MOCK
@@ -472,3 +808,10 @@ func (m *MockProvider) VerifyWebhookSignature(signature string, body []byte) boo
 //        m.Calls = append(m.Calls, "InitializeDeposit")
 //        // ...
 //    }
+//
+// 5. Configurable behavior:
+//    type MockProvider struct {
+//        Behaviors map[string]string // reference → status
+//    }
+//    provider.Behaviors["WD-FAIL123"] = "failed"
+//    provider.Behaviors["WD-SUCCESS123"] = "success"

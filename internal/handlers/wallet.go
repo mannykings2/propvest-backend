@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -802,8 +804,10 @@ func (h *WalletHandler) HandleWebhook(c *gin.Context) {
 	//   }
 	//
 	// We need to extract the reference to look up the payment.
+	// NOTE: We already have the body as []byte, so we unmarshal that directly
+	// instead of using c.ShouldBindJSON (which would try to read the already-consumed body)
 	var payload map[string]interface{}
-	if err := c.ShouldBindJSON(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		// Malformed JSON (shouldn't happen - provider sends valid JSON)
 		// But signature was valid, so this is weird...
 		// Maybe network corruption? Log this.
@@ -1007,3 +1011,391 @@ func (h *WalletHandler) handleError(c *gin.Context, err error) {
 //   2. Wire dependencies (cmd/api/main.go)
 //   3. Test in Postman
 //   4. Celebrate! 🎉
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HANDLER METHOD 6: HandleDepositCallback
+// ═══════════════════════════════════════════════════════════════════════════
+
+// HandleDepositCallback handles GET /api/v1/wallet/deposit/callback
+//
+// PURPOSE:
+// This is where users land AFTER completing payment on Paystack's page.
+// It shows them a "Payment Successful!" message and their updated balance.
+//
+// IMPORTANT NOTES:
+// 1. This is just for USER EXPERIENCE - shows nice confirmation page
+// 2. The ACTUAL wallet crediting happens via WEBHOOK (HandleWebhook)
+// 3. This callback might not fire (user closes browser), so we rely on webhook
+// 4. This is PUBLIC (no auth) because user's browser calls it
+//
+// AUTHENTICATION:
+// NO authentication required (user's browser calls this after payment).
+// We use the reference parameter to look up the payment.
+//
+// REQUEST:
+//   GET /api/v1/wallet/deposit/callback?trxref=DEP-123&reference=DEP-123
+//   Query Parameters:
+//     - trxref: Transaction reference (from Paystack)
+//     - reference: Our payment reference (same as trxref)
+//
+// FLOW:
+//   1. User completes payment on Paystack page
+//   2. Paystack redirects browser to this URL
+//   3. Paystack ALSO sends webhook to backend (this credits wallet)
+//   4. This handler shows user a nice "Success!" page
+//   5. User sees their updated balance
+//
+// SUCCESS RESPONSE (200 OK):
+//   HTML page with:
+//     - "Payment Successful!" message
+//     - Amount paid
+//     - Updated wallet balance
+//     - Link to view transactions
+//
+// Example URL:
+//   http://localhost:8080/api/v1/wallet/deposit/callback?trxref=DEP-abc123&reference=DEP-abc123
+//
+// WHY TWO MECHANISMS (Callback + Webhook)?
+// ------------------------------------------
+// Callback:  User experience (show success message)
+// Webhook:   Actual processing (credit wallet reliably)
+//
+// Webhook is more reliable because:
+//   - User might close browser before callback loads
+//   - User might lose internet connection
+//   - Browser might have issues
+//   - Paystack retries webhooks if they fail
+//
+// So we use BOTH:
+//   - Webhook: Credits wallet (source of truth)
+//   - Callback: Shows nice message to user
+func (h *WalletHandler) HandleDepositCallback(c *gin.Context) {
+	// Step 1: Extract reference from query parameters
+	//
+	// Paystack sends both trxref and reference parameters.
+	// They're usually the same value (our payment reference).
+	//
+	// Query parameter extraction in Gin:
+	//   c.Query("key") → returns string value or "" if not present
+	//   c.DefaultQuery("key", "default") → returns value or default
+	reference := c.Query("reference")
+	if reference == "" {
+		// Fallback to trxref if reference is missing
+		reference = c.Query("trxref")
+	}
+
+	if reference == "" {
+		// No reference found - can't look up payment
+		// Return a simple HTML error page
+		c.Data(http.StatusBadRequest, "text/html; charset=utf-8", []byte(`
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<title>Payment Error</title>
+				<style>
+					body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+					.error { color: #d32f2f; }
+				</style>
+			</head>
+			<body>
+				<h1 class="error">⚠️ Payment Error</h1>
+				<p>Invalid payment reference. Please contact support.</p>
+				<p><a href="/">Go to Dashboard</a></p>
+			</body>
+			</html>
+		`))
+		return
+	}
+
+	// Step 2: Return success HTML page
+	//
+	// NOTE: We don't verify the payment here because:
+	//   1. The webhook already did that and credited the wallet
+	//   2. This is just a visual confirmation for the user
+	//   3. User doesn't need to be authenticated (just showing a message)
+	//
+	// In a real app, you might:
+	//   - Fetch payment details from database
+	//   - Show exact amount and new balance
+	//   - Redirect to a React/Vue page with the reference
+	//
+	// For now, we show a simple success page.
+	html := fmt.Sprintf(`
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<title>Payment Successful</title>
+			<meta charset="utf-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1">
+			<style>
+				body {
+					font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+					background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%);
+					color: white;
+					text-align: center;
+					padding: 50px 20px;
+					margin: 0;
+				}
+				.container {
+					background: white;
+					color: #333;
+					max-width: 500px;
+					margin: 0 auto;
+					padding: 40px;
+					border-radius: 10px;
+					box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+				}
+				.success-icon {
+					font-size: 80px;
+					color: #4caf50;
+					margin-bottom: 20px;
+				}
+				h1 {
+					color: #4caf50;
+					margin: 20px 0;
+				}
+				.reference {
+					background: #f5f5f5;
+					padding: 10px;
+					border-radius: 5px;
+					font-family: 'Courier New', monospace;
+					font-size: 14px;
+					margin: 20px 0;
+					word-break: break-all;
+				}
+				.button {
+					display: inline-block;
+					background: #667eea;
+					color: white;
+					padding: 12px 30px;
+					text-decoration: none;
+					border-radius: 5px;
+					margin-top: 20px;
+					font-weight: bold;
+				}
+				.button:hover {
+					background: #5568d3;
+				}
+				.info {
+					background: #e3f2fd;
+					border-left: 4px solid #2196f3;
+					padding: 15px;
+					margin: 20px 0;
+					text-align: left;
+				}
+			</style>
+		</head>
+		<body>
+			<div class="container">
+				<div class="success-icon">✅</div>
+				<h1>Payment Successful!</h1>
+				<p>Your deposit has been processed successfully.</p>
+				
+				<div class="reference">
+					Reference: %s
+				</div>
+				
+				<div class="info">
+					<strong>What happens next?</strong>
+					<ul style="text-align: left; padding-left: 20px;">
+						<li>Your wallet has been credited</li>
+						<li>You can now use the funds for investments</li>
+						<li>Check your transaction history for details</li>
+					</ul>
+				</div>
+				
+				<p style="color: #666; font-size: 14px;">
+					💡 Tip: You can close this page and return to the app.
+				</p>
+				
+				<a href="/" class="button">Go to Dashboard</a>
+			</div>
+		</body>
+		</html>
+	`, reference)
+
+	// Send HTML response
+	// Content-Type: text/html tells browser this is an HTML page
+	// charset=utf-8 ensures special characters (₦, ✅) display correctly
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HANDLER METHOD 7: HandleTransferWebhook
+// ═══════════════════════════════════════════════════════════════════════════
+
+// HandleTransferWebhook handles POST /api/v1/webhooks/paystack/transfer
+//
+// PURPOSE:
+// This endpoint receives real-time notifications from Paystack when a transfer
+// (withdrawal) succeeds or fails. This allows us to finalize withdrawals without
+// polling.
+//
+// CRITICAL SECURITY NOTES:
+// 1. This endpoint is PUBLIC (no authentication middleware)
+// 2. Must verify webhook signature to prevent fraud
+// 3. Must be idempotent (handle duplicate deliveries)
+//
+// AUTHENTICATION:
+// NO authentication required (Paystack calls this).
+// Security comes from signature verification.
+//
+// REQUEST:
+//   POST /api/v1/webhooks/paystack/transfer
+//   Headers:
+//     X-Paystack-Signature: abc123def456...
+//     Content-Type: application/json
+//   Body:
+//     {
+//       "event": "transfer.success",  // or "transfer.failed", "transfer.reversed"
+//       "data": {
+//         "reference": "WD-123e4567",
+//         "amount": 50000,
+//         "status": "success",  // or "failed", "reversed"
+//         "transfer_code": "TRF_abc123",
+//         "recipient": {...},
+//         "reason": "Transfer failed due to invalid account",
+//         ...
+//       }
+//     }
+//
+// WEBHOOK EVENTS:
+//   - transfer.success: Transfer completed successfully
+//   - transfer.failed: Transfer failed (invalid account, insufficient provider balance)
+//   - transfer.reversed: Transfer was successful but later reversed (rare)
+//
+// SUCCESS RESPONSE (200 OK):
+//   {"success": true, "message": "Webhook processed successfully"}
+//
+// ERROR RESPONSES:
+//   - 400 Bad Request: Invalid signature, malformed body
+//   - 200 OK: Even for duplicates (idempotency)
+//
+// FLOW:
+//   1. Read raw request body
+//   2. Extract and verify signature
+//   3. Parse JSON payload
+//   4. Extract transfer reference
+//   5. Determine success/failure from event type
+//   6. Find transaction by reference
+//   7. Call FinalizeWithdrawal() service method
+//   8. Service updates transaction status and releases/debits funds
+//   9. Return 200 OK
+//
+// IDEMPOTENCY:
+// Safe to call multiple times - FinalizeWithdrawal checks transaction status first.
+//
+// PAYSTACK RETRY BEHAVIOR:
+// If we return non-200, Paystack retries for 3 days. Return 200 for duplicates.
+//
+// Example curl (simulating Paystack):
+//   curl -X POST http://localhost:8080/api/v1/webhooks/paystack/transfer \
+//     -H "X-Paystack-Signature: abc123..." \
+//     -H "Content-Type: application/json" \
+//     -d '{"event":"transfer.success","data":{"reference":"WD-123","transfer_code":"TRF_abc"}}'
+func (h *WalletHandler) HandleTransferWebhook(c *gin.Context) {
+	// Step 1: Read raw request body (needed for signature verification)
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+
+	// Step 2: Extract and verify signature
+	signature := c.GetHeader("X-Paystack-Signature")
+	if signature == "" {
+		// Try mock provider header for development/testing
+		signature = c.GetHeader("X-Mock-Signature")
+		if signature == "" {
+			response.Error(c, http.StatusBadRequest, "Missing signature header")
+			return
+		}
+	}
+
+	// Verify signature to prevent forged webhooks
+	if !h.walletService.VerifyWebhookSignature(signature, body) {
+		response.Error(c, http.StatusBadRequest, "Invalid signature")
+		return
+	}
+
+	// Step 3: Parse webhook payload
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	// Step 4: Extract event type
+	event, ok := payload["event"].(string)
+	if !ok {
+		response.Error(c, http.StatusBadRequest, "Missing event type")
+		return
+	}
+
+	// Step 5: Extract data object
+	data, ok := payload["data"].(map[string]interface{})
+	if !ok {
+		response.Error(c, http.StatusBadRequest, "Invalid webhook payload structure")
+		return
+	}
+
+	// Step 6: Extract reference (our withdrawal reference: WD-xxx)
+	reference, ok := data["reference"].(string)
+	if !ok || reference == "" {
+		response.Error(c, http.StatusBadRequest, "Missing transfer reference")
+		return
+	}
+
+	// Step 7: Extract transfer code (Paystack's transfer ID)
+	transferCode, _ := data["transfer_code"].(string)
+
+	// Step 8: Extract failure reason (if transfer failed)
+	failureReason, _ := data["reason"].(string)
+	if failureReason == "" {
+		// Sometimes it's in "message" field
+		failureReason, _ = data["message"].(string)
+	}
+
+	// Step 9: Determine success/failure based on event type
+	var success bool
+	switch event {
+	case "transfer.success":
+		success = true
+	case "transfer.failed", "transfer.reversed":
+		success = false
+	default:
+		// Unknown event type (transfer.pending, etc.)
+		// Acknowledge but don't process
+		response.SuccessWithMessage(c, http.StatusOK, "Event acknowledged but not processed")
+		return
+	}
+
+	// Step 10: Find transaction by reference using service method
+	transactionID, err := h.walletService.GetWithdrawalByReference(c.Request.Context(), reference)
+	if err != nil {
+		// Transaction not found - might be for a different reference
+		// Log this but return 200 to prevent Paystack retries
+		response.SuccessWithMessage(c, http.StatusOK, "Transaction not found (possibly already processed)")
+		return
+	}
+
+	// Step 11: Finalize withdrawal
+	err = h.walletService.FinalizeWithdrawal(
+		c.Request.Context(),
+		transactionID,
+		success,
+		transferCode,
+		failureReason,
+	)
+	
+	if err != nil {
+		// Even on error, return 200 to prevent Paystack retries
+		// The error is logged in the service layer
+		response.SuccessWithMessage(c, http.StatusOK, "Webhook received but processing encountered an error")
+		return
+	}
+
+	// Step 12: Return success
+	response.SuccessWithMessage(c, http.StatusOK, "Webhook processed successfully")
+}
+
