@@ -1,0 +1,206 @@
+# ============================================================================
+# Caddy Configuration for PropVest Backend API
+# ============================================================================
+#
+# Caddy is simpler than Nginx and handles SSL automatically with Let's Encrypt.
+# No manual certificate setup needed - Caddy does it all automatically!
+#
+# FEATURES:
+#   - Automatic HTTPS with Let's Encrypt
+#   - HTTP to HTTPS redirect (automatic)
+#   - Security headers
+#   - Gzip compression
+#   - WebSocket support
+#   - Simple, readable configuration
+#
+# INSTALLATION:
+#   Ubuntu/Debian:
+#     sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+#     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+#     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+#     sudo apt update
+#     sudo apt install caddy
+#
+#   Or download binary: https://caddyserver.com/download
+#
+# USAGE:
+#   1. Update domain name below (api.propvest.com)
+#   2. Copy this file to /etc/caddy/Caddyfile
+#   3. Run: sudo systemctl restart caddy
+#   4. Done! Caddy handles SSL automatically
+#
+# WHY CADDY OVER NGINX?
+#   ✅ Automatic HTTPS (no manual certificate setup)
+#   ✅ Simpler configuration
+#   ✅ Built-in security best practices
+#   ✅ Automatic HTTP/2
+#   ✅ Automatic certificate renewal
+#   ❌ Less battle-tested than Nginx
+#   ❌ Slightly higher memory usage
+#
+# RECOMMENDATION: Use Caddy for simplicity, Nginx for maximum performance
+#
+# ============================================================================
+
+# ────────────────────────────────────────────────────────────────────────────
+# Production API Configuration
+# ────────────────────────────────────────────────────────────────────────────
+
+api.propvest.com {
+    # Caddy automatically:
+    # - Obtains SSL certificate from Let's Encrypt
+    # - Redirects HTTP to HTTPS
+    # - Renews certificates before expiry
+    # - Enables HTTP/2
+    
+    # Security headers
+    header {
+        # HSTS: Force HTTPS for 1 year
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        
+        # Prevent clickjacking
+        X-Frame-Options "DENY"
+        
+        # Prevent MIME-sniffing
+        X-Content-Type-Options "nosniff"
+        
+        # XSS Protection
+        X-XSS-Protection "1; mode=block"
+        
+        # Referrer policy
+        Referrer-Policy "strict-origin-when-cross-origin"
+        
+        # Disable unnecessary features
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        
+        # Remove Server header (security by obscurity)
+        -Server
+    }
+    
+    # Enable gzip compression
+    encode gzip
+    
+    # Request size limit
+    request_body {
+        max_size 10MB
+    }
+    
+    # Reverse proxy to Go backend
+    reverse_proxy localhost:8081 {
+        # Health check
+        health_uri /health
+        health_interval 10s
+        health_timeout 5s
+        
+        # Preserve original request info
+        header_up Host {host}
+        header_up X-Real-IP {remote}
+        header_up X-Forwarded-For {remote}
+        header_up X-Forwarded-Proto {scheme}
+    }
+    
+    # Logging
+    log {
+        output file /var/log/caddy/propvest-api.log
+        format json
+    }
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# Development/Local Configuration (No SSL)
+# ────────────────────────────────────────────────────────────────────────────
+# Uncomment for local testing without SSL
+
+# localhost:8080 {
+#     reverse_proxy localhost:8081
+# }
+
+# ────────────────────────────────────────────────────────────────────────────
+# Multiple Domains (API + Frontend)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Frontend (optional - if serving frontend with Caddy too)
+# propvest.com, www.propvest.com {
+#     root * /var/www/propvest-frontend/dist
+#     encode gzip
+#     file_server
+#     try_files {path} /index.html
+# }
+
+# ────────────────────────────────────────────────────────────────────────────
+# Load Balancing (Multiple Backend Instances)
+# ────────────────────────────────────────────────────────────────────────────
+
+# api.propvest.com {
+#     reverse_proxy {
+#         to localhost:8081
+#         to localhost:8082
+#         to localhost:8083
+#         
+#         lb_policy round_robin
+#         health_uri /health
+#     }
+# }
+
+# ============================================================================
+# Caddy Commands
+# ============================================================================
+#
+# Start Caddy:
+#   sudo systemctl start caddy
+#
+# Stop Caddy:
+#   sudo systemctl stop caddy
+#
+# Restart Caddy:
+#   sudo systemctl restart caddy
+#
+# Reload config (zero downtime):
+#   sudo systemctl reload caddy
+#
+# Check status:
+#   sudo systemctl status caddy
+#
+# View logs:
+#   sudo journalctl -u caddy -f
+#   tail -f /var/log/caddy/propvest-api.log
+#
+# Test configuration:
+#   caddy validate --config /etc/caddy/Caddyfile
+#
+# Run in foreground (debugging):
+#   caddy run --config /etc/caddy/Caddyfile
+#
+# ============================================================================
+# DNS Setup Required
+# ============================================================================
+#
+# Create an A record pointing to your server:
+#   api.propvest.com  →  YOUR_SERVER_IP
+#
+# Caddy will automatically obtain SSL certificate once DNS is configured!
+#
+# ============================================================================
+# Firewall Configuration
+# ============================================================================
+#
+# sudo ufw allow 80/tcp   # HTTP (for Let's Encrypt verification)
+# sudo ufw allow 443/tcp  # HTTPS
+# sudo ufw allow 22/tcp   # SSH
+# sudo ufw enable
+#
+# ============================================================================
+# Email for Let's Encrypt (Optional)
+# ============================================================================
+#
+# Set your email for certificate expiry notifications:
+#
+# {
+#     email admin@propvest.com
+# }
+#
+# api.propvest.com {
+#     # ... rest of config
+# }
+#
+# ============================================================================

@@ -77,6 +77,12 @@ var (
 	ErrMaximumDeposit      = errors.New("amount exceeds maximum deposit")
 	ErrMinimumWithdrawal   = errors.New("amount is below minimum withdrawal")
 	ErrMaximumWithdrawal   = errors.New("amount exceeds maximum withdrawal")
+	ErrInvalidBankAccount  = errors.New("invalid bank account details")
+	ErrAccountNameMismatch = errors.New("account name does not match bank records")
+	ErrBankAccountNotFound = errors.New("bank account not found")
+	ErrInvalidBankCode     = errors.New("invalid bank code")
+	ErrWithdrawalPending   = errors.New("you have a pending withdrawal, please wait for it to complete")
+	ErrWithdrawalFailed    = errors.New("withdrawal processing failed")
 
 	// ───────────────────────────────────────────────────────────────────
 	// PROPERTY ERRORS
@@ -133,6 +139,14 @@ var (
 	ErrInternal       = errors.New("internal server error")
 	ErrInternalServer = errors.New("internal server error") // Alias for consistency
 	ErrNotImplemented = errors.New("feature not yet implemented")
+
+	// ───────────────────────────────────────────────────────────────────
+	// PAYMENT PROVIDER ERRORS
+	// ───────────────────────────────────────────────────────────────────
+	ErrPaymentProviderUnavailable = errors.New("payment provider is temporarily unavailable")
+	ErrPaymentVerificationFailed  = errors.New("payment verification failed")
+	ErrTransferFailed             = errors.New("transfer to bank account failed")
+	ErrInsufficientProviderBalance = errors.New("insufficient balance in payment provider account")
 )
 
 // AppError wraps an error with additional context.

@@ -35,6 +35,54 @@ type WalletRepository interface {
 	// ListTransactions returns filtered, paginated ledger rows for a user plus a
 	// total count for pagination metadata.
 	ListTransactions(ctx context.Context, userID uuid.UUID, txType, status string, limit, offset int) ([]models.WalletTransaction, int64, error)
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// LOCKED BALANCE OPERATIONS (for withdrawal flow)
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	// LockFunds reserves funds for a pending withdrawal.
+	// This moves funds from available to locked balance.
+	// MUST be called within a transaction.
+	//
+	// Flow:
+	//   1. Check available_balance >= amount
+	//   2. locked_balance += amount
+	//   3. Available funds reduced without permanently debiting main_balance
+	//
+	// Example: User has ₦100k, withdraws ₦50k
+	//   Before: main=100k, locked=0, available=100k
+	//   After:  main=100k, locked=50k, available=50k
+	LockFunds(ctx context.Context, userID uuid.UUID, amount int64, tx *gorm.DB) error
+
+	// ReleaseFundsOnSuccess releases locked funds after successful withdrawal.
+	// This permanently debits main_balance and clears locked_balance.
+	// MUST be called within a transaction.
+	//
+	// Flow:
+	//   1. main_balance -= amount
+	//   2. locked_balance -= amount
+	//
+	// Example: After ₦50k withdrawal succeeds
+	//   Before: main=100k, locked=50k, available=50k
+	//   After:  main=50k, locked=0, available=50k
+	ReleaseFundsOnSuccess(ctx context.Context, userID uuid.UUID, amount int64, tx *gorm.DB) error
+
+	// ReleaseFundsOnFailure reverses fund lock after failed withdrawal.
+	// This returns locked funds to available balance without debiting main_balance.
+	// MUST be called within a transaction.
+	//
+	// Flow:
+	//   1. locked_balance -= amount
+	//   2. main_balance unchanged (reversal)
+	//
+	// Example: After ₦50k withdrawal fails
+	//   Before: main=100k, locked=50k, available=50k
+	//   After:  main=100k, locked=0, available=100k (funds returned)
+	ReleaseFundsOnFailure(ctx context.Context, userID uuid.UUID, amount int64, tx *gorm.DB) error
+
+	// UpdateTransactionStatus updates the status of a wallet transaction.
+	// Used by worker to mark withdrawals as completed/failed.
+	UpdateTransactionStatus(ctx context.Context, transactionID uuid.UUID, status string) error
 }
 
 type walletRepository struct {
@@ -216,4 +264,101 @@ func (r *walletRepository) ListTransactions(ctx context.Context, userID uuid.UUI
 		return nil, 0, err
 	}
 	return txns, total, nil
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOCKED BALANCE OPERATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// LockFunds reserves funds for a pending withdrawal.
+// MUST be called within a database transaction.
+func (r *walletRepository) LockFunds(ctx context.Context, userID uuid.UUID, amount int64, tx *gorm.DB) error {
+	// Lock the wallet row for update
+	var wallet models.Wallet
+	if err := tx.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ?", userID).
+		First(&wallet).Error; err != nil {
+		return fmt.Errorf("failed to lock wallet: %w", err)
+	}
+
+	// Check available balance (main_balance - locked_balance)
+	availableBalance := wallet.MainBalance - wallet.LockedBalance
+	if availableBalance < amount {
+		return fmt.Errorf("insufficient available balance: have %d, need %d", availableBalance, amount)
+	}
+
+	// Increase locked_balance
+	result := tx.WithContext(ctx).Model(&models.Wallet{}).
+		Where("user_id = ?", userID).
+		Update("locked_balance", gorm.Expr("locked_balance + ?", amount))
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to lock funds: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("wallet not found for user: %s", userID)
+	}
+
+	return nil
+}
+
+// ReleaseFundsOnSuccess permanently debits wallet and clears lock after successful withdrawal.
+// MUST be called within a database transaction.
+func (r *walletRepository) ReleaseFundsOnSuccess(ctx context.Context, userID uuid.UUID, amount int64, tx *gorm.DB) error {
+	// Update both main_balance and locked_balance atomically
+	result := tx.WithContext(ctx).Model(&models.Wallet{}).
+		Where("user_id = ?", userID).
+		Updates(map[string]interface{}{
+			"main_balance":   gorm.Expr("main_balance - ?", amount),
+			"locked_balance": gorm.Expr("locked_balance - ?", amount),
+		})
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to release funds on success: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("wallet not found for user: %s", userID)
+	}
+
+	return nil
+}
+
+// ReleaseFundsOnFailure returns locked funds to available balance after failed withdrawal.
+// MUST be called within a database transaction.
+func (r *walletRepository) ReleaseFundsOnFailure(ctx context.Context, userID uuid.UUID, amount int64, tx *gorm.DB) error {
+	// Just decrease locked_balance, main_balance stays unchanged (reversal)
+	result := tx.WithContext(ctx).Model(&models.Wallet{}).
+		Where("user_id = ?", userID).
+		Update("locked_balance", gorm.Expr("locked_balance - ?", amount))
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to release funds on failure: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("wallet not found for user: %s", userID)
+	}
+
+	return nil
+}
+
+// UpdateTransactionStatus updates the status of a wallet transaction.
+// Used by worker to mark withdrawals as completed/failed.
+func (r *walletRepository) UpdateTransactionStatus(ctx context.Context, transactionID uuid.UUID, status string) error {
+	result := r.WithContext(ctx).Model(&models.WalletTransaction{}).
+		Where("id = ?", transactionID).
+		Update("status", status)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update transaction status: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("transaction not found: %s", transactionID)
+	}
+
+	return nil
 }

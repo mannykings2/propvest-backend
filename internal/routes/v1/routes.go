@@ -117,47 +117,39 @@ func RegisterRoutes(
 	//   POST /wallet/deposit     - Initiate deposit via payment provider
 	//   POST /wallet/withdraw    - Request withdrawal to bank account
 	//   GET  /wallet/transactions - Get transaction history (paginated, filterable)
+	//   GET  /wallet/deposit/callback - Payment success callback (PUBLIC)
 	//
 	// WEBHOOK (PUBLIC):
 	//   POST /webhooks/payment   - Payment provider callback (signature-verified, not in this group)
 	wallet := router.Group("/wallet")
-	wallet.Use(middleware.Auth(cfg)) // All wallet routes require authentication
 	{
-		// GET /api/v1/wallet
-		// Returns user's wallet with main_balance, earnings_balance, currency, etc.
-		// Example response:
-		//   {
-		//     "main_balance": 150000,
-		//     "main_balance_formatted": "₦1,500.00",
-		//     "earnings_balance": 50000,
-		//     "earnings_balance_formatted": "₦500.00",
-		//     "currency": "NGN"
-		//   }
-		wallet.GET("", walletHandler.GetWallet)
+		// Authenticated routes (require JWT)
+		authenticated := wallet.Group("")
+		authenticated.Use(middleware.Auth(cfg))
+		{
+			// GET /api/v1/wallet
+			// Returns user's wallet with main_balance, earnings_balance, currency, etc.
+			authenticated.GET("", walletHandler.GetWallet)
 
-		// POST /api/v1/wallet/deposit
-		// Initiates deposit flow with payment provider.
-		// Request body: {"amount_kobo": 150000, "idempotency_key": "optional"}
-		// Returns: {"authorization_url": "https://checkout.paystack.com/...", "reference": "DEP-xxx"}
-		// User is redirected to authorization_url to complete payment.
-		wallet.POST("/deposit", walletHandler.InitiateDeposit)
+			// POST /api/v1/wallet/deposit
+			// Initiates deposit flow with payment provider.
+			authenticated.POST("/deposit", walletHandler.InitiateDeposit)
 
-		// POST /api/v1/wallet/withdraw
-		// Debits wallet and queues payout to bank account.
-		// Request body: {"amount_kobo": 50000, "account_number": "0123456789", "account_name": "John Doe", "bank_code": "058", "bank_name": "GTBank"}
-		// Returns: Transaction record with status "pending"
-		// Actual payout processed asynchronously by worker.
-		wallet.POST("/withdraw", walletHandler.RequestWithdrawal)
+			// POST /api/v1/wallet/withdraw
+			// Debits wallet and queues payout to bank account.
+			authenticated.POST("/withdraw", walletHandler.RequestWithdrawal)
 
-		// GET /api/v1/wallet/transactions?type=deposit&status=completed&page=1&limit=20
-		// Returns paginated transaction history with optional filters.
-		// Query parameters:
-		//   - type: Filter by transaction type (deposit, withdrawal, credit, debit)
-		//   - status: Filter by status (pending, completed, failed)
-		//   - page: Page number (default: 1)
-		//   - limit: Items per page (default: 20, max: 100)
-		// Returns: {"transactions": [...], "total": 42, "page": 1, "pages": 3}
-		wallet.GET("/transactions", walletHandler.GetTransactions)
+			// GET /api/v1/wallet/transactions?type=deposit&status=completed&page=1&limit=20
+			// Returns paginated transaction history with optional filters.
+			authenticated.GET("/transactions", walletHandler.GetTransactions)
+		}
+
+		// Public routes (no authentication required)
+		// GET /api/v1/wallet/deposit/callback?trxref=DEP-123&reference=DEP-123
+		// Called by user's browser after completing payment on Paystack page.
+		// Shows "Payment Successful!" message. Actual wallet crediting happens via webhook.
+		// No auth required because user's browser (not our app) calls this.
+		wallet.GET("/deposit/callback", walletHandler.HandleDepositCallback)
 	}
 
 	// ───────────────────────────────────────────────────────────────────
@@ -256,5 +248,25 @@ func RegisterRoutes(
 		// This is a PUBLIC endpoint - anyone can POST to it.
 		// Security relies on signature verification, not authentication.
 		webhooks.POST("/payment", walletHandler.HandleWebhook)
+
+		// POST /api/v1/webhooks/paystack/transfer
+		// Called by Paystack when a transfer (withdrawal) succeeds or fails.
+		// Headers: X-Paystack-Signature
+		// Body: Paystack payload with transfer reference and status
+		//
+		// Events handled:
+		//   - transfer.success: Transfer completed successfully
+		//   - transfer.failed: Transfer failed (invalid account, etc.)
+		//   - transfer.reversed: Transfer was reversed (rare)
+		//
+		// Handler responsibilities:
+		//   1. Verify signature (prevents forged webhooks)
+		//   2. Extract transfer reference (WD-xxx)
+		//   3. Call FinalizeWithdrawal() to complete or reverse withdrawal
+		//   4. Return 200 OK (idempotent)
+		//
+		// PUBLIC endpoint - security via signature verification.
+		webhooks.POST("/paystack/transfer", walletHandler.HandleTransferWebhook)
 	}
 }
+

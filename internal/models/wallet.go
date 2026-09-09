@@ -26,6 +26,20 @@ type Wallet struct {
 	// NEVER use float64 for money. See the design notes above.
 	MainBalance int64 `gorm:"default:0;not null" json:"main_balance"`
 
+	// LockedBalance holds funds reserved for pending withdrawals.
+	// When a user initiates a withdrawal:
+	//   1. Amount moves from available → locked
+	//   2. Withdrawal processes asynchronously
+	//   3. On success: locked → 0, main_balance reduced
+	//   4. On failure: locked → 0, main_balance unchanged (reversal)
+	//
+	// This prevents double-spending during pending withdrawals.
+	// Example: User has ₦100k, withdraws ₦50k
+	//   main_balance = 100,000 kobo (unchanged until confirmed)
+	//   locked_balance = 50,000 kobo (reserved)
+	//   available = main_balance - locked_balance = 50,000 kobo
+	LockedBalance int64 `gorm:"default:0;not null" json:"locked_balance"`
+
 	// EarningsBalance holds rental income and investment returns.
 	// Kept separate from MainBalance so the frontend can display them
 	// distinctly (as your Dashboard mockup does).
@@ -45,6 +59,28 @@ type Wallet struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// AvailableBalance returns the spendable balance (main - locked).
+// This is the balance available for investments and new withdrawals.
+func (w *Wallet) AvailableBalance() int64 {
+	return w.MainBalance - w.LockedBalance
+}
+
+// TotalBalance returns the sum of all balances.
+// This is the user's total wealth in the platform.
+func (w *Wallet) TotalBalance() int64 {
+	return w.MainBalance + w.EarningsBalance
+}
+
+// CanWithdraw checks if a withdrawal amount is possible.
+func (w *Wallet) CanWithdraw(amount int64) bool {
+	return w.AvailableBalance() >= amount && amount > 0
+}
+
+// CanInvest checks if an investment amount is possible.
+func (w *Wallet) CanInvest(amount int64) bool {
+	return w.AvailableBalance() >= amount && amount > 0
 }
 
 

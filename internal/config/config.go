@@ -80,6 +80,8 @@ type Config struct {
 	MaxInvestmentAmount      int64 `mapstructure:"MAX_INVESTMENT_AMOUNT"` // kobo
 	MinDepositAmount         int64 `mapstructure:"MIN_DEPOSIT_AMOUNT"`    // kobo
 	MaxDepositAmount         int64 `mapstructure:"MAX_DEPOSIT_AMOUNT"`    // kobo
+	MinWithdrawalAmount      int64 `mapstructure:"MIN_WITHDRAWAL_AMOUNT"` // kobo
+	MaxWithdrawalAmount      int64 `mapstructure:"MAX_WITHDRAWAL_AMOUNT"` // kobo
 }
 
 // Load reads the .env file (and OS env) and maps it into a Config struct.
