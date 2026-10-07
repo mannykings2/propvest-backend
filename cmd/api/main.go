@@ -81,13 +81,20 @@ func main() {
 	// 5. REPOSITORIES.
 	userRepo := repositories.NewUserRepository(database.DB)
 	walletRepo := repositories.NewWalletRepository(database.DB)
+	outboxRepo := repositories.NewOutboxRepository(database.DB)
 	refreshTokenRepo := repositories.NewRefreshTokenRepository(database.DB)
 	otpRepo := repositories.NewOTPVerificationRepository(database.DB)
 	tokenRepo := repositories.NewVerificationTokenRepository(database.DB)
-	// propertyRepo := repositories.NewPropertyRepository(database.DB)
+	paymentRepo := repositories.NewPaymentRepository(database.DB)
+	
+	// Property repositories (Milestone 4)
+	propertyRepo := repositories.NewPropertyRepository(database.DB)
+	propertyImageRepo := repositories.NewPropertyImageRepository(database.DB)
+	propertyDocumentRepo := repositories.NewPropertyDocumentRepository(database.DB)
+	
+	// Future repositories
 	// investmentRepo := repositories.NewInvestmentRepository(database.DB)
 	// notificationRepo := repositories.NewNotificationRepository(database.DB)
-	paymentRepo := repositories.NewPaymentRepository(database.DB)
 
 	// 6. UTILITIES / SERVICES.
 	cloudinaryService, err := cloudinary.NewCloudinaryService(cfg)
@@ -106,8 +113,12 @@ func main() {
 
 	authService := services.NewAuthService(userRepo, walletRepo, refreshTokenRepo, tokenRepo, emailSender, auditRecorder, cfg, database.DB)
 	userService := services.NewUserService(userRepo, otpRepo, refreshTokenRepo, smsService, cloudinaryService, cfg)
-	walletService := services.NewWalletService(walletRepo, userRepo, paymentRepo, paymentProvider, notificationService, mq, cfg, database.DB)
-	// propertyService := services.NewPropertyService(propertyRepo, cloudinaryService, auditRecorder)
+	walletService := services.NewWalletService(walletRepo, userRepo, paymentRepo, outboxRepo, paymentProvider, notificationService, mq, cfg, database.DB)
+	
+	// Property service (Milestone 4)
+	propertyService := services.NewPropertyService(propertyRepo, propertyImageRepo, propertyDocumentRepo, outboxRepo, cloudinaryService, database.DB)
+	
+	// Future services
 	// investmentService := services.NewInvestmentService(investmentRepo, walletRepo, propertyRepo, notificationService, cfg, database.DB)
 	// adminService := services.NewAdminService(userRepo, propertyRepo, investmentRepo, walletRepo, refreshTokenRepo, auditRecorder)
 
@@ -115,7 +126,11 @@ func main() {
 	authHandler := handlers.NewAuthHandler(authService)
 	userHandler := handlers.NewUserHandler(userService)
 	walletHandler := handlers.NewWalletHandler(walletService)
-	// propertyHandler := handlers.NewPropertyHandler(propertyService)
+	
+	// Property handler (Milestone 4)
+	propertyHandler := handlers.NewPropertyHandler(propertyService)
+	
+	// Future handlers
 	// investmentHandler := handlers.NewInvestmentHandler(investmentService)
 	// notificationHandler := handlers.NewNotificationHandler(notificationService)
 	// adminHandler := handlers.NewAdminHandler(adminService)
@@ -143,7 +158,7 @@ func main() {
 	r.GET("/health/ready", handlers.ReadyCheck)
 
 	apiV1 := r.Group("/api/v1")
-	v1.RegisterRoutes(apiV1, authHandler, userHandler, walletHandler, cfg)
+	v1.RegisterRoutes(apiV1, authHandler, userHandler, walletHandler, propertyHandler, cfg)
 
 	// 9. START THE API PROCESS'S REALTIME CONSUMER.
 	// The worker (and webhook path) publish "realtime notification" messages to

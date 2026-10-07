@@ -30,7 +30,7 @@ import (
 
 const (
 	webhookURL  = "http://localhost:8081/api/v1/webhooks/payment"
-	secretKey   = "sk_test_bb30d89975e64d0787923e064e0af2df55478154"
+	secretKey   = "sk_test_YOUR_TEST_SECRET_KEY"
 	pollInterval = 3 * time.Second
 )
 

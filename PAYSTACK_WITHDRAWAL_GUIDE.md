@@ -12,8 +12,8 @@ This guide explains how to test real withdrawals using Paystack's Transfer API i
 
 ✅ You already have:
 ```env
-PAYSTACK_SECRET_KEY=sk_test_bb30d89975e64d0787923e064e0af2df55478154
-PAYSTACK_PUBLIC_KEY=pk_test_b1e892d2d025c78b50982d0100489f4dd14e8e24
+PAYSTACK_SECRET_KEY=sk_test_YOUR_TEST_SECRET_KEY
+PAYSTACK_PUBLIC_KEY=pk_test_YOUR_TEST_PUBLIC_KEY
 PAYMENT_PROVIDER=paystack
 ```
 
@@ -104,7 +104,7 @@ Before initiating withdrawal, verify the account exists:
 # But you can test it directly:
 
 curl -X GET "https://api.paystack.co/bank/resolve?account_number=0123456789&bank_code=058" \
-  -H "Authorization: Bearer sk_test_bb30d89975e64d0787923e064e0af2df55478154"
+  -H "Authorization: Bearer sk_test_YOUR_TEST_SECRET_KEY"
 ```
 
 **Successful Response:**
@@ -327,7 +327,7 @@ Check Paystack Dashboard → Transfers → Recipients to see if it already exist
 
 ```bash
 curl -X GET "https://api.paystack.co/transfer/verify/TRF_xxxxx" \
-  -H "Authorization: Bearer sk_test_bb30d89975e64d0787923e064e0af2df55478154"
+  -H "Authorization: Bearer sk_test_YOUR_TEST_SECRET_KEY"
 ```
 
 ### Check Your Application Logs

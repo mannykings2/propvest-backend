@@ -83,6 +83,15 @@ type WalletRepository interface {
 	// UpdateTransactionStatus updates the status of a wallet transaction.
 	// Used by worker to mark withdrawals as completed/failed.
 	UpdateTransactionStatus(ctx context.Context, transactionID uuid.UUID, status string) error
+
+	// GetTransactionByID retrieves a transaction by its UUID.
+	// Used by worker to fetch pending withdrawal details.
+	GetTransactionByID(ctx context.Context, transactionID uuid.UUID) (*models.WalletTransaction, error)
+
+	// GetPendingWithdrawalByUser checks if user has a pending withdrawal.
+	// Prevents duplicate pending withdrawals (business rule).
+	// Returns the pending transaction if found, nil if none.
+	GetPendingWithdrawalByUser(ctx context.Context, userID uuid.UUID) (*models.WalletTransaction, error)
 }
 
 type walletRepository struct {
@@ -361,4 +370,74 @@ func (r *walletRepository) UpdateTransactionStatus(ctx context.Context, transact
 	}
 
 	return nil
+}
+
+// GetTransactionByID retrieves a transaction by its UUID.
+// Used by worker to fetch pending withdrawal details for processing.
+//
+// Example:
+//   txn, err := repo.GetTransactionByID(ctx, uuid.MustParse("abc-123"))
+//   if err != nil {
+//       return err
+//   }
+//   // Extract bank details from metadata JSON
+//   var meta map[string]string
+//   json.Unmarshal(txn.Metadata, &meta)
+//   accountNumber := meta["account_number"]
+func (r *walletRepository) GetTransactionByID(ctx context.Context, transactionID uuid.UUID) (*models.WalletTransaction, error) {
+	var transaction models.WalletTransaction
+	err := r.WithContext(ctx).Where("id = ?", transactionID).First(&transaction).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("transaction not found: %s", transactionID)
+		}
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+	return &transaction, nil
+}
+
+// GetPendingWithdrawalByUser checks if user has a pending withdrawal.
+//
+// BUSINESS RULE: Users can only have ONE pending withdrawal at a time.
+//
+// WHY THIS RULE?
+//   1. Prevents race conditions (multiple withdrawals processing simultaneously)
+//   2. Prevents locked balance overflow (locking more than available)
+//   3. Simplifies user experience (clear status for pending withdrawal)
+//   4. Reduces fraud risk (limits exposure to failed transfers)
+//
+// WORKFLOW:
+//   1. User requests withdrawal → status="pending", funds locked
+//   2. Worker processes → status changes to "completed" or "failed"
+//   3. User can request new withdrawal only after previous one finishes
+//
+// RETURNS:
+//   - *WalletTransaction: The pending withdrawal if found
+//   - nil: If no pending withdrawal (user can withdraw)
+//   - error: If database query fails
+//
+// Example usage in service:
+//   pending, err := repo.GetPendingWithdrawalByUser(ctx, userID)
+//   if err != nil {
+//       return err
+//   }
+//   if pending != nil {
+//       return ErrWithdrawalPending // "You have a pending withdrawal"
+//   }
+//   // Proceed with new withdrawal
+func (r *walletRepository) GetPendingWithdrawalByUser(ctx context.Context, userID uuid.UUID) (*models.WalletTransaction, error) {
+	var transaction models.WalletTransaction
+	err := r.WithContext(ctx).
+		Where("user_id = ? AND type = ? AND status = ?", userID, "withdrawal", "pending").
+		Order("created_at DESC"). // Get most recent if multiple exist (shouldn't happen)
+		First(&transaction).Error
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil // No pending withdrawal found (OK)
+		}
+		return nil, fmt.Errorf("failed to check pending withdrawal: %w", err)
+	}
+
+	return &transaction, nil
 }

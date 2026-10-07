@@ -1,8 +1,6 @@
 .env
+.env.local
 *.pem
 bin/
 tmp/
-.sql
-.exe
-.md
-/PAYSTACK_SETUP_GUIDE.md
+*.exe
