@@ -83,7 +83,7 @@ func main() {
 
 	// Generate signature (you can use any secret or leave it as test_secret)
 	// Since your PAYSTACK_WEBHOOK_SECRET is not set, the system uses the secret key
-	secret := "sk_test_bb30d89975e64d0787923e064e0af2df55478154"
+	secret := "sk_test_YOUR_TEST_SECRET_KEY"
 	signature := generateSignature(string(body), secret)
 
 	// Send webhook to your local server

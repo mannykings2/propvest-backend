@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/cloudinary/cloudinary-go/v2"
+	"github.com/cloudinary/cloudinary-go/v2/api"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/config"
+	"github.com/mannykings2/propvest-backend/internal/logger"
 )
 
 // CloudinaryService handles image uploads to Cloudinary
@@ -405,3 +407,105 @@ func ValidateImageFile(file *multipart.FileHeader, maxSize int64, allowedFormats
 	return nil
 }
 
+
+// MoveToDeletedFolder moves a file to a -deleted subfolder in Cloudinary
+// This enables recoverability for soft-deleted database records.
+//
+// Example transformation:
+//   properties/abc-123/image-1  →  properties/abc-123/-deleted/image-1
+//   properties/abc-123/docs/title.pdf  →  properties/abc-123/-deleted/docs/title.pdf
+//
+// This approach:
+//   1. Preserves the original file structure
+//   2. Makes deleted files easily identifiable
+//   3. Allows bulk cleanup via Cloudinary admin UI
+//   4. Enables restoration if needed
+//
+// Parameters:
+//   - publicID: Original Cloudinary public ID (e.g., "properties/abc-123/image-1")
+//   - resourceType: "image" for images, "raw" for documents/PDFs
+//
+// Returns:
+//   - newPublicID: New public ID in -deleted folder
+//   - error: If rename operation fails
+//
+// Usage:
+//   newID, err := s.MoveToDeletedFolder(ctx, "properties/abc-123/image-1", "image")
+//   // newID = "properties/abc-123/-deleted/image-1"
+func (s *CloudinaryService) MoveToDeletedFolder(ctx context.Context, publicID string, resourceType string) (string, error) {
+	// Split the publicID into path components
+	// Example: "properties/abc-123/docs/title" → ["properties", "abc-123", "docs", "title"]
+	parts := strings.Split(publicID, "/")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid publicID format: %s", publicID)
+	}
+
+	// Find the last folder before the filename
+	// Insert "-deleted" folder before the filename
+	// Example: properties/abc-123/image-1 → properties/abc-123/-deleted/image-1
+	filename := parts[len(parts)-1]
+	folderPath := strings.Join(parts[:len(parts)-1], "/")
+	newPublicID := folderPath + "/-deleted/" + filename
+
+	// Use Cloudinary's rename API to move the file
+	// This preserves the file and updates its path
+	_, err := s.client.Upload.Rename(ctx, uploader.RenameParams{
+		FromPublicID: publicID,
+		ToPublicID:   newPublicID,
+		ResourceType: resourceType,
+		Overwrite:    api.Bool(false), // Don't overwrite if target exists
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to move file to deleted folder: %w", err)
+	}
+
+	logger.Info("moved file to deleted folder",
+		"original_public_id", publicID,
+		"new_public_id", newPublicID,
+		"resource_type", resourceType)
+
+	return newPublicID, nil
+}
+
+// RestoreFromDeletedFolder restores a file from the -deleted folder
+// This is the reverse operation of MoveToDeletedFolder.
+//
+// Example transformation:
+//   properties/abc-123/-deleted/image-1  →  properties/abc-123/image-1
+//
+// Parameters:
+//   - publicID: Current public ID in -deleted folder
+//   - resourceType: "image" or "raw"
+//
+// Returns:
+//   - newPublicID: Restored public ID (without -deleted)
+//   - error: If rename operation fails
+func (s *CloudinaryService) RestoreFromDeletedFolder(ctx context.Context, publicID string, resourceType string) (string, error) {
+	// Verify the publicID contains "-deleted"
+	if !strings.Contains(publicID, "/-deleted/") {
+		return "", fmt.Errorf("publicID is not in deleted folder: %s", publicID)
+	}
+
+	// Remove "/-deleted/" from the path
+	newPublicID := strings.Replace(publicID, "/-deleted/", "/", 1)
+
+	// Use Cloudinary's rename API to restore the file
+	_, err := s.client.Upload.Rename(ctx, uploader.RenameParams{
+		FromPublicID: publicID,
+		ToPublicID:   newPublicID,
+		ResourceType: resourceType,
+		Overwrite:    api.Bool(false),
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to restore file from deleted folder: %w", err)
+	}
+
+	logger.Info("restored file from deleted folder",
+		"original_public_id", publicID,
+		"new_public_id", newPublicID,
+		"resource_type", resourceType)
+
+	return newPublicID, nil
+}

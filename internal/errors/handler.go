@@ -105,6 +105,9 @@ func HTTPStatusFromError(err error) int {
 		errors.Is(err, ErrMaximumDeposit),
 		errors.Is(err, ErrMinimumWithdrawal),
 		errors.Is(err, ErrMaximumWithdrawal),
+		errors.Is(err, ErrInvalidBankAccount),
+		errors.Is(err, ErrAccountNameMismatch),
+		errors.Is(err, ErrWithdrawalPending),
 		errors.Is(err, ErrPropertyClosed),
 		errors.Is(err, ErrPropertyNotApproved),
 		errors.Is(err, ErrPropertyFullyFunded),
@@ -130,8 +133,16 @@ func HTTPStatusFromError(err error) int {
 		errors.Is(err, ErrCache),
 		errors.Is(err, ErrStorage),
 		errors.Is(err, ErrExternal),
-		errors.Is(err, ErrInternal):
+		errors.Is(err, ErrInternal),
+		errors.Is(err, ErrWithdrawalFailed),
+		errors.Is(err, ErrTransferFailed):
 		return http.StatusInternalServerError
+
+	// ───────────────────────────────────────────────────────────────────
+	// 503 SERVICE UNAVAILABLE
+	// ───────────────────────────────────────────────────────────────────
+	case errors.Is(err, ErrPaymentProviderUnavailable):
+		return http.StatusServiceUnavailable
 
 	// ───────────────────────────────────────────────────────────────────
 	// DEFAULT: 500 INTERNAL SERVER ERROR
@@ -183,6 +194,14 @@ func ClientMessage(err error) string {
 		errors.Is(err, ErrPhoneTaken),
 		errors.Is(err, ErrUserNotFound),
 		errors.Is(err, ErrInsufficientFunds),
+		errors.Is(err, ErrMinimumWithdrawal),
+		errors.Is(err, ErrMaximumWithdrawal),
+		errors.Is(err, ErrInvalidBankAccount),
+		errors.Is(err, ErrAccountNameMismatch),
+		errors.Is(err, ErrWithdrawalPending),
+		errors.Is(err, ErrWithdrawalFailed),
+		errors.Is(err, ErrPaymentProviderUnavailable),
+		errors.Is(err, ErrTransferFailed),
 		errors.Is(err, ErrPropertyClosed),
 		errors.Is(err, ErrKYCRequired),
 		errors.Is(err, ErrWeakPassword),
@@ -230,6 +249,22 @@ func ErrorCode(err error) string {
 		return "user_not_found"
 	case errors.Is(err, ErrInsufficientFunds):
 		return "insufficient_funds"
+	case errors.Is(err, ErrMinimumWithdrawal):
+		return "minimum_withdrawal"
+	case errors.Is(err, ErrMaximumWithdrawal):
+		return "maximum_withdrawal"
+	case errors.Is(err, ErrInvalidBankAccount):
+		return "invalid_bank_account"
+	case errors.Is(err, ErrAccountNameMismatch):
+		return "account_name_mismatch"
+	case errors.Is(err, ErrWithdrawalPending):
+		return "withdrawal_pending"
+	case errors.Is(err, ErrWithdrawalFailed):
+		return "withdrawal_failed"
+	case errors.Is(err, ErrPaymentProviderUnavailable):
+		return "provider_unavailable"
+	case errors.Is(err, ErrTransferFailed):
+		return "transfer_failed"
 	case errors.Is(err, ErrPropertyClosed):
 		return "property_closed"
 	case errors.Is(err, ErrKYCRequired):

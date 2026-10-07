@@ -433,11 +433,13 @@ func (m *MockProvider) ResolveAccountNumber(ctx context.Context, accountNumber, 
 		bankName = "Unknown Bank"
 	}
 
-	// Mock returns success with a dummy account name
-	// In tests, you can check if this matches the user's input
+	// Mock provider: Return a flexible test name that will pass validation
+	// In real scenarios, banks return the actual account holder's name
+	// For testing, we return "TEST USER" which should match most test inputs
+	// through the fuzzy matching logic in accountNamesMatch()
 	return &AccountResolution{
 		AccountNumber: accountNumber,
-		AccountName:   "John Doe Mock", // Always returns this name
+		AccountName:   "TEST USER", // Simple name that's lenient for testing
 		BankCode:      bankCode,
 		BankName:      bankName,
 	}, nil

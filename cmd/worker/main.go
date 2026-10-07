@@ -14,6 +14,7 @@ import (
 
 	"github.com/mannykings2/propvest-backend/internal/config"
 	"github.com/mannykings2/propvest-backend/internal/database"
+	"github.com/mannykings2/propvest-backend/internal/dispatcher"
 	"github.com/mannykings2/propvest-backend/internal/logger"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/payments"
@@ -129,6 +130,7 @@ func main() {
 	walletRepo := repositories.NewWalletRepository(db)
 	userRepo := repositories.NewUserRepository(db)
 	paymentRepo := repositories.NewPaymentRepository(db)
+	outboxRepo := repositories.NewOutboxRepository(db)
 
 	log.Info("✓ repositories initialized")
 
@@ -141,6 +143,7 @@ func main() {
 		walletRepo,
 		userRepo,
 		paymentRepo,
+		outboxRepo,
 		provider,
 		nil, // notifier - not needed in worker
 		nil, // mq - worker doesn't publish, only consumes
@@ -160,6 +163,28 @@ func main() {
 		log.Warn("⚠️ RabbitMQ not available; worker will only run reconciliation")
 	} else {
 		log.Info("✓ message queue connected")
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════
+	// STEP 7.5: Start Outbox Dispatcher (CRITICAL)
+	// ═══════════════════════════════════════════════════════════════════════
+	// The dispatcher polls outbox_events and publishes to RabbitMQ.
+	// This is the HEART of the outbox pattern - without it, events stay in the database.
+	//
+	// Why here? The dispatcher needs RabbitMQ to publish events. If RabbitMQ is down,
+	// events accumulate in the database and will be published when RabbitMQ comes back.
+	if mqClient.Enabled() {
+		hostname, _ := os.Hostname()
+		instanceID := fmt.Sprintf("worker-%s-%d", hostname, os.Getpid())
+		
+		dispatcher := dispatcher.NewOutboxDispatcher(outboxRepo, mqClient, instanceID)
+		dispatcher.Start(ctx)
+		defer dispatcher.Stop()
+		
+		log.Info("✓ outbox dispatcher started", "instance_id", instanceID)
+	} else {
+		log.Warn("⚠️ outbox dispatcher NOT started - RabbitMQ unavailable",
+			"impact", "withdrawal events will not be processed until RabbitMQ is available")
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════

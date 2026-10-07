@@ -52,6 +52,7 @@ type walletService struct {
 	walletRepo   repositories.WalletRepository
 	userRepo     repositories.UserRepository
 	paymentRepo  repositories.PaymentRepository
+	outboxRepo   repositories.OutboxRepository
 	provider     payments.Provider
 	notifier     NotificationService
 	mq           *queue.Client
@@ -64,6 +65,7 @@ func NewWalletService(
 	walletRepo repositories.WalletRepository,
 	userRepo repositories.UserRepository,
 	paymentRepo repositories.PaymentRepository,
+	outboxRepo repositories.OutboxRepository,
 	provider payments.Provider,
 	notifier NotificationService,
 	mq *queue.Client,
@@ -74,6 +76,7 @@ func NewWalletService(
 		walletRepo:  walletRepo,
 		userRepo:    userRepo,
 		paymentRepo: paymentRepo,
+		outboxRepo:  outboxRepo,
 		provider:    provider,
 		notifier:    notifier,
 		mq:          mq,
@@ -239,20 +242,19 @@ func (s *walletService) CreditFromPaymentReference(ctx context.Context, referenc
 	return nil
 }
 
-// InitiateWithdrawal validates + debits the wallet immediately (so the funds are
-// reserved) and records a PENDING withdrawal ledger row, then enqueues the
 // InitiateWithdrawal requests a withdrawal with production-grade locked balance handling.
 //
 // FLOW:
 //   1. Validate amount against limits
-//   2. Pre-flight check: Resolve bank account (verify name matches)
-//   3. Database transaction:
+//   2. Check for existing pending withdrawal (prevent duplicates)
+//   3. Pre-flight check: Resolve bank account (verify name matches)
+//   4. Database transaction:
 //      a. Lock wallet row (FOR UPDATE)
 //      b. Check available balance
 //      c. Lock funds (locked_balance += amount)
 //      d. Create pending WalletTransaction
-//   4. Queue withdrawal job for async processing
-//   5. Return pending status immediately
+//   5. Queue withdrawal job for async processing
+//   6. Return pending status immediately
 //
 // LOCKED BALANCE PATTERN:
 //   Before: main=100k, locked=0, available=100k
@@ -274,7 +276,26 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 		return nil, apperrors.NewMaximumWithdrawalError(s.cfg.MaxWithdrawalAmount)
 	}
 
-	// Step 2: Pre-flight check - Resolve bank account
+	// Step 2: Check for existing pending withdrawal
+	// Business Rule: Users can only have ONE pending withdrawal at a time
+	// This prevents:
+	//   - Race conditions (multiple withdrawals processing simultaneously)
+	//   - Locked balance overflow (locking more than available)
+	//   - Confusion (unclear which withdrawal is being processed)
+	pendingWithdrawal, err := s.walletRepo.GetPendingWithdrawalByUser(ctx, userID)
+	if err != nil {
+		logger.FromContext(ctx).Error("failed to check pending withdrawal", "error", err)
+		return nil, apperrors.ErrInternalServer
+	}
+	if pendingWithdrawal != nil {
+		logger.FromContext(ctx).Warn("user has pending withdrawal",
+			"user_id", userID,
+			"pending_reference", pendingWithdrawal.Reference,
+			"pending_amount", pendingWithdrawal.Amount)
+		return nil, apperrors.ErrWithdrawalPending
+	}
+
+	// Step 3: Pre-flight check - Resolve bank account
 	// This verifies the account exists and gets the real account name from the bank
 	logger.FromContext(ctx).Info("resolving bank account",
 		"account_number", req.AccountNumber,
@@ -302,10 +323,10 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 		"account_name", resolution.AccountName,
 		"bank_name", resolution.BankName)
 
-	// Step 3: Generate unique reference
+	// Step 4: Generate unique reference
 	reference := "WD-" + strings.ToUpper(uuid.NewString()[:12])
 
-	// Step 4: Database transaction - Lock funds and create pending transaction
+	// Step 5: Database transaction - Lock funds, create pending transaction, and create outbox event
 	var ledger *models.WalletTransaction
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		// Lock wallet row to prevent concurrent modifications
@@ -342,7 +363,36 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 			Status:        "pending",
 			Metadata:      datatypes.JSON(meta),
 		}
-		return tx.Create(ledger).Error
+		if cerr := tx.Create(ledger).Error; cerr != nil {
+			return cerr
+		}
+
+		// OUTBOX PATTERN: Create outbox event in same transaction
+		// This ensures the withdrawal event is NEVER lost, even if RabbitMQ is down
+		// The dispatcher will asynchronously publish this to RabbitMQ
+		event, eerr := models.NewWithdrawalEvent(ledger.ID, queue.WithdrawalMessage{
+			TransactionID: ledger.ID.String(),
+			UserID:        userID.String(),
+			AmountKobo:    req.Amount,
+			Reference:     reference,
+		})
+		if eerr != nil {
+			logger.FromContext(ctx).Error("failed to create withdrawal event", "error", eerr)
+			return eerr
+		}
+
+		// Save event in same transaction (atomic with business state)
+		if oerr := s.outboxRepo.CreateEvent(ctx, event, tx); oerr != nil {
+			logger.FromContext(ctx).Error("failed to save outbox event", "error", oerr)
+			return oerr
+		}
+
+		logger.FromContext(ctx).Info("outbox event created",
+			"event_id", event.ID,
+			"transaction_id", ledger.ID,
+			"reference", reference)
+
+		return nil
 	})
 
 	if err != nil {
@@ -355,44 +405,35 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 		return nil, apperrors.ErrInternalServer
 	}
 
-	logger.FromContext(ctx).Info("withdrawal initiated",
+	logger.FromContext(ctx).Info("withdrawal initiated with outbox",
 		"reference", reference,
 		"amount", req.Amount,
-		"transaction_id", ledger.ID)
+		"transaction_id", ledger.ID,
+		"reliability", "guaranteed - outbox pattern ensures delivery")
 
-	// Step 5: Queue withdrawal job for async processing
-	// The worker will call InitiateTransfer() to Paystack
-	if s.mq != nil && s.mq.Enabled() {
-		pubErr := s.mq.Publish(ctx, queue.QueueWithdrawalProcess, queue.WithdrawalMessage{
-			TransactionID: ledger.ID.String(),
-			UserID:        userID.String(),
-			AmountKobo:    req.Amount,
-			Reference:     reference,
-		})
-		if pubErr != nil {
-			logger.FromContext(ctx).Error("failed to queue withdrawal",
-				"error", pubErr,
-				"reference", reference)
-			// Don't fail the request - reconciler will pick it up
-		}
-	} else {
-		logger.FromContext(ctx).Warn("message queue not enabled, withdrawal will be processed by reconciler",
-			"reference", reference)
+	// REMOVED: Direct RabbitMQ publish (Step 6)
+	// The outbox dispatcher will handle this asynchronously
+	// Benefits:
+	//   - Message NEVER lost (persisted in database transaction)
+	//   - System works even when RabbitMQ is down
+	//   - Automatic retry with exponential backoff
+	//   - Stale event recovery if dispatcher crashes
+
+	// Step 7: Notify user
+	if s.notifier != nil {
+		s.notifier.Notify(ctx, userID, models.NotificationWithdrawalUpdate,
+			"Withdrawal requested",
+			fmt.Sprintf("Your withdrawal of ₦%s to %s is being processed.",
+				formatKobo(req.Amount), resolution.BankName),
+			map[string]any{
+				"reference":        reference,
+				"amount":           req.Amount,
+				"bank_name":        resolution.BankName,
+				"account_number":   req.AccountNumber,
+			})
 	}
 
-	// Step 6: Notify user
-	s.notifier.Notify(ctx, userID, models.NotificationWithdrawalUpdate,
-		"Withdrawal requested",
-		fmt.Sprintf("Your withdrawal of ₦%s to %s is being processed.",
-			formatKobo(req.Amount), resolution.BankName),
-		map[string]any{
-			"reference":   reference,
-			"amount":      req.Amount,
-			"bank_name":   resolution.BankName,
-			"account_number": req.AccountNumber,
-		})
-
-	// Step 7: Return pending status immediately
+	// Step 8: Return pending status immediately
 	return txnToResponse(ledger), nil
 }
 

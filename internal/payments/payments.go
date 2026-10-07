@@ -33,17 +33,26 @@ import (
 
 // New selects the provider from config.
 func New(cfg *config.Config) Provider {
-	if cfg.PaymentProvider == "paystack" && cfg.PaystackSecretKey != "" {
-		logger.Info("payment provider: Paystack")
-		return &PaystackProvider{
-			secretKey:     cfg.PaystackSecretKey,
-			webhookSecret: cfg.PaystackWebhookSecret,
-			callbackURL:   cfg.BaseURL + "/api/v1/wallet/deposit/callback",
-			http:          &http.Client{Timeout: 15 * time.Second},
+	switch cfg.PaymentProvider {
+	case "paystack":
+		if cfg.PaystackSecretKey != "" {
+			logger.Info("payment provider: Paystack (all operations real)")
+			return &PaystackProvider{
+				secretKey:     cfg.PaystackSecretKey,
+				webhookSecret: cfg.PaystackWebhookSecret,
+				callbackURL:   cfg.BaseURL + "/api/v1/wallet/deposit/callback",
+				http:          &http.Client{Timeout: 15 * time.Second},
+			}
 		}
+		logger.Warn("Paystack configured but secret key missing, falling back to mock")
+		return &MockProvider{}
+	case "hybrid":
+		logger.Info("payment provider: hybrid (Paystack deposits + Mock withdrawals)")
+		return NewHybridProvider(cfg)
+	default:
+		logger.Info("payment provider: mock (no real charges)")
+		return &MockProvider{}
 	}
-	logger.Info("payment provider: mock (no real charges)")
-	return &MockProvider{}
 }
 
 // NewProvider is an alias kept for the composition root's readability.

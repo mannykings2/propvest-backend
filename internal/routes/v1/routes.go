@@ -15,6 +15,7 @@ import (
 //   - authHandler: Handler for authentication endpoints
 //   - userHandler: Handler for user management endpoints
 //   - walletHandler: Handler for wallet operations (Milestone 3)
+//   - propertyHandler: Handler for property management (Milestone 4)
 //   - cfg: Application configuration (needed for middleware)
 //
 // Route organization:
@@ -33,6 +34,7 @@ func RegisterRoutes(
 	authHandler *handlers.AuthHandler,
 	userHandler *handlers.UserHandler,
 	walletHandler *handlers.WalletHandler,
+	propertyHandler *handlers.PropertyHandler,
 	cfg *config.Config,
 ) {
 	// ───────────────────────────────────────────────────────────────────
@@ -40,9 +42,9 @@ func RegisterRoutes(
 	// ───────────────────────────────────────────────────────────────────
 	router.GET("/health", handlers.HealthCheck)
 
-	// TODO: Add public property listing endpoint (unauthenticated browse)
-	// router.GET("/properties", propertyHandler.List)
-	// router.GET("/properties/:id", propertyHandler.GetPublic)
+	// Public property browsing (no authentication required)
+	router.GET("/properties", propertyHandler.ListProperties)
+	router.GET("/properties/:id", propertyHandler.GetProperty)
 
 	// ───────────────────────────────────────────────────────────────────
 	// AUTHENTICATION ROUTES (Milestone 1)
@@ -137,7 +139,10 @@ func RegisterRoutes(
 
 			// POST /api/v1/wallet/withdraw
 			// Debits wallet and queues payout to bank account.
-			authenticated.POST("/withdraw", walletHandler.RequestWithdrawal)
+			// Rate limited: Maximum 3 withdrawals per hour per user
+			authenticated.POST("/withdraw",
+				middleware.WithdrawalRateLimit(3),  // Apply rate limiting
+				walletHandler.RequestWithdrawal)
 
 			// GET /api/v1/wallet/transactions?type=deposit&status=completed&page=1&limit=20
 			// Returns paginated transaction history with optional filters.
@@ -155,21 +160,57 @@ func RegisterRoutes(
 	// ───────────────────────────────────────────────────────────────────
 	// PROPERTY ROUTES (Milestone 4)
 	// ───────────────────────────────────────────────────────────────────
-	// properties := router.Group("/properties")
-	// {
-	//     // Public routes
-	//     properties.GET("", propertyHandler.List)
-	//     properties.GET("/:id", propertyHandler.Get)
+	// Property management endpoints for creating, updating, and managing properties.
 	//
-	//     // Authenticated routes
-	//     authenticated := properties.Group("")
-	//     authenticated.Use(middleware.Auth())
-	//     {
-	//         authenticated.POST("", middleware.RequireRole("developer", "admin"), propertyHandler.Create)
-	//         authenticated.PATCH("/:id", middleware.RequireRole("developer", "admin"), propertyHandler.Update)
-	//         authenticated.DELETE("/:id", middleware.RequireRole("developer", "admin"), propertyHandler.Delete)
-	//     }
-	// }
+	// AUTHENTICATION & AUTHORIZATION:
+	//   - Public routes: Browse published properties (no auth)
+	//   - Admin routes: Full CRUD, publish, manage images/documents (admin role required)
+	//
+	// ENDPOINTS:
+	//   PUBLIC:
+	//     GET  /properties           - List published properties (public browse)
+	//     GET  /properties/:id       - Get single published property
+	//
+	//   ADMIN:
+	//     POST   /admin/properties                              - Create new property
+	//     GET    /admin/properties                              - List all properties (including drafts)
+	//     GET    /admin/properties/:id                          - Get property (any status)
+	//     PATCH  /admin/properties/:id                          - Update property details
+	//     DELETE /admin/properties/:id                          - Delete property
+	//     POST   /admin/properties/:id/publish                  - Publish property (draft→published)
+	//
+	//   IMAGES (admin only):
+	//     POST   /admin/properties/:id/images                   - Upload property image
+	//     DELETE /admin/properties/:id/images/:imageId          - Delete image
+	//     PATCH  /admin/properties/:id/images/:imageId/cover    - Set as cover image
+	//
+	//   DOCUMENTS (admin only):
+	//     POST   /admin/properties/:id/documents                      - Upload document
+	//     DELETE /admin/properties/:id/documents/:documentId          - Delete document
+	//     PATCH  /admin/properties/:id/documents/:documentId/visibility - Toggle public/private
+	admin := router.Group("/admin/properties")
+	admin.Use(middleware.Auth(cfg), middleware.RequireRole("admin"))
+	{
+		// Property CRUD
+		admin.POST("", propertyHandler.CreateProperty)
+		admin.GET("", propertyHandler.ListAdminProperties)
+		admin.GET("/:id", propertyHandler.GetAdminProperty)
+		admin.PATCH("/:id", propertyHandler.UpdateProperty)
+		admin.DELETE("/:id", propertyHandler.DeleteProperty)
+
+		// Property lifecycle
+		admin.POST("/:id/publish", propertyHandler.PublishProperty)
+
+		// Image management
+		admin.POST("/:id/images", propertyHandler.UploadImage)
+		admin.DELETE("/:id/images/:imageId", propertyHandler.DeleteImage)
+		admin.PATCH("/:id/images/:imageId/cover", propertyHandler.SetCoverImage)
+
+		// Document management
+		admin.POST("/:id/documents", propertyHandler.UploadDocument)
+		admin.DELETE("/:id/documents/:documentId", propertyHandler.DeleteDocument)
+		admin.PATCH("/:id/documents/:documentId/visibility", propertyHandler.ToggleDocumentVisibility)
+	}
 
 	// ───────────────────────────────────────────────────────────────────
 	// INVESTMENT ROUTES (Milestone 5, requires authentication)

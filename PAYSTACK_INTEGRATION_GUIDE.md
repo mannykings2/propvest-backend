@@ -55,8 +55,8 @@ Your `.env` should have these Paystack settings:
 ```env
 # Payment Configuration (Paystack)
 PAYMENT_PROVIDER=paystack
-PAYSTACK_SECRET_KEY=sk_test_bb30d89975e64d0787923e064e0af2df55478154
-PAYSTACK_PUBLIC_KEY=pk_test_b1e892d2d025c78b50982d0100489f4dd14e8e24
+PAYSTACK_SECRET_KEY=sk_test_YOUR_TEST_SECRET_KEY
+PAYSTACK_PUBLIC_KEY=pk_test_YOUR_TEST_PUBLIC_KEY
 PAYSTACK_WEBHOOK_SECRET=your_actual_webhook_secret
 ```
 

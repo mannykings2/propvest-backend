@@ -88,28 +88,29 @@ type Config struct {
 // It is called once at startup — in main.go — and the result is passed down
 // to every component that needs it.
 func Load() *Config {
-	viper.SetConfigFile(".env")
+        viper.SetConfigFile(".env")
 
-	// AutomaticEnv means: if an env variable is set in the OS (e.g. on a
-	// production server), it takes priority over .env. This is how the same
-	// binary works in both local dev and production.
-	viper.AutomaticEnv()
+        // AutomaticEnv means: if an env variable is set in the OS (e.g. on a
+        // production server), it takes priority over .env.
+        viper.AutomaticEnv()
 
-	// Sensible defaults so local dev works with a minimal .env.
-	setDefaults()
+        // Explicitly bind environment variables so they are available
+        // during viper.Unmarshal(), including when there is no .env file.
+        bindEnvironmentVariables()
 
-	if err := viper.ReadInConfig(); err != nil {
-		// Not fatal — on a production server there may be no .env file,
-		// just real environment variables injected by the platform.
-		log.Printf("No .env file found, reading from environment: %v", err)
-	}
+        // Sensible defaults so local dev works with a minimal .env.
+        setDefaults()
 
-	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
-		log.Fatalf("Failed to unmarshal config: %v", err)
-	}
+        if err := viper.ReadInConfig(); err != nil {
+                log.Printf("No .env file found, reading from environment: %v", err)
+        }
 
-	return &cfg
+        var cfg Config
+        if err := viper.Unmarshal(&cfg); err != nil {
+                log.Fatalf("Failed to unmarshal config: %v", err)
+        }
+
+        return &cfg
 }
 
 // setDefaults registers fallback values for optional tunables.
@@ -183,4 +184,72 @@ func (c *Config) RefreshTTL() time.Duration {
 // IsProduction reports whether the app is running in production mode.
 func (c *Config) IsProduction() bool {
 	return c.AppEnv == "production"
+}
+
+
+func bindEnvironmentVariables() {
+        keys := []string{
+                "APP_ENV",
+                "PORT",
+                "BASE_URL",
+
+                "DATABASE_URL",
+                "DB_MAX_OPEN_CONNS",
+                "DB_MAX_IDLE_CONNS",
+                "DB_CONN_MAX_LIFETIME",
+                "DB_CONN_MAX_IDLE_TIME",
+
+                "REDIS_URL",
+                "RABBITMQ_URL",
+
+                "JWT_SECRET",
+                "JWT_REFRESH_SECRET",
+                "ACCESS_TOKEN_TTL",
+                "REFRESH_TOKEN_TTL",
+                "BCRYPT_COST",
+                "ALLOWED_ORIGINS",
+
+                "CLOUDINARY_CLOUD_NAME",
+                "CLOUDINARY_API_KEY",
+                "CLOUDINARY_API_SECRET",
+                "CLOUDINARY_UPLOAD_PRESET",
+
+                "SMS_PROVIDER",
+                "TWILIO_ACCOUNT_SID",
+                "TWILIO_AUTH_TOKEN",
+                "TWILIO_PHONE_NUMBER",
+                "AFRICASTALKING_USERNAME",
+                "AFRICASTALKING_API_KEY",
+                "AFRICASTALKING_SENDER_ID",
+                "TERMII_API_KEY",
+                "TERMII_SENDER_ID",
+
+                "SMTP_HOST",
+                "SMTP_PORT",
+                "SMTP_USERNAME",
+                "SMTP_PASSWORD",
+                "SMTP_FROM_EMAIL",
+                "SMTP_FROM_NAME",
+                "EMAIL_PROVIDER",
+
+                "PAYSTACK_SECRET_KEY",
+                "PAYSTACK_PUBLIC_KEY",
+                "PAYSTACK_WEBHOOK_SECRET",
+                "PAYMENT_PROVIDER",
+
+                "REQUIRE_EMAIL_VERIFICATION",
+                "REQUIRE_KYC_FOR_INVESTMENT",
+                "MIN_INVESTMENT_AMOUNT",
+                "MAX_INVESTMENT_AMOUNT",
+                "MIN_DEPOSIT_AMOUNT",
+                "MAX_DEPOSIT_AMOUNT",
+                "MIN_WITHDRAWAL_AMOUNT",
+                "MAX_WITHDRAWAL_AMOUNT",
+        }
+
+        for _, key := range keys {
+                if err := viper.BindEnv(key); err != nil {
+                        log.Fatalf("Failed to bind environment variable %s: %v", key, err)
+                }
+        }
 }
