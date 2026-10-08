@@ -92,8 +92,10 @@ func main() {
 	propertyImageRepo := repositories.NewPropertyImageRepository(database.DB)
 	propertyDocumentRepo := repositories.NewPropertyDocumentRepository(database.DB)
 	
+	// Investment repository (Milestone 5)
+	investmentRepo := repositories.NewInvestmentRepository(database.DB)
+	
 	// Future repositories
-	// investmentRepo := repositories.NewInvestmentRepository(database.DB)
 	// notificationRepo := repositories.NewNotificationRepository(database.DB)
 
 	// 6. UTILITIES / SERVICES.
@@ -118,8 +120,10 @@ func main() {
 	// Property service (Milestone 4)
 	propertyService := services.NewPropertyService(propertyRepo, propertyImageRepo, propertyDocumentRepo, outboxRepo, cloudinaryService, database.DB)
 	
+	// Investment service (Milestone 5)
+	investmentService := services.NewInvestmentService(investmentRepo, propertyRepo, walletRepo, outboxRepo, database.DB)
+	
 	// Future services
-	// investmentService := services.NewInvestmentService(investmentRepo, walletRepo, propertyRepo, notificationService, cfg, database.DB)
 	// adminService := services.NewAdminService(userRepo, propertyRepo, investmentRepo, walletRepo, refreshTokenRepo, auditRecorder)
 
 	// 7. HANDLERS.
@@ -130,8 +134,10 @@ func main() {
 	// Property handler (Milestone 4)
 	propertyHandler := handlers.NewPropertyHandler(propertyService)
 	
+	// Investment handler (Milestone 5)
+	investmentHandler := handlers.NewInvestmentHandler(investmentService)
+	
 	// Future handlers
-	// investmentHandler := handlers.NewInvestmentHandler(investmentService)
 	// notificationHandler := handlers.NewNotificationHandler(notificationService)
 	// adminHandler := handlers.NewAdminHandler(adminService)
 	// webhookHandler := handlers.NewWebhookHandler(walletService, cfg)
@@ -158,7 +164,7 @@ func main() {
 	r.GET("/health/ready", handlers.ReadyCheck)
 
 	apiV1 := r.Group("/api/v1")
-	v1.RegisterRoutes(apiV1, authHandler, userHandler, walletHandler, propertyHandler, cfg)
+	v1.RegisterRoutes(apiV1, authHandler, userHandler, walletHandler, propertyHandler, investmentHandler, cfg)
 
 	// 9. START THE API PROCESS'S REALTIME CONSUMER.
 	// The worker (and webhook path) publish "realtime notification" messages to

@@ -178,6 +178,43 @@ const (
 	//   - Email service (notify investors of completion)
 	//   - Payout processor (initiate return payments)
 	EventTypePropertyCompleted = "property.completed"
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// INVESTMENT MODULE EVENTS (Milestone 5)
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	// EventTypeInvestmentCreated triggers notifications when a new investment is made
+	// Queue: propvest.investment.created
+	// Payload: InvestmentCreatedPayload
+	// Triggered: When user successfully purchases property slots
+	// Consumers:
+	//   - Email service (send investment confirmation to user)
+	//   - Notification service (push notification to user)
+	//   - Analytics service (track investment metrics)
+	//   - Receipt generator (generate investment receipt PDF)
+	EventTypeInvestmentCreated = "investment.created"
+
+	// EventTypeInvestmentCancelled triggers notifications when an investment is cancelled
+	// Queue: propvest.investment.cancelled
+	// Payload: InvestmentCancelledPayload
+	// Triggered: When an active investment is cancelled and refunded
+	// Consumers:
+	//   - Email service (notify user of cancellation and refund)
+	//   - Notification service (push notification)
+	//   - Analytics service (track cancellation metrics)
+	//   - Audit service (log cancellation for compliance)
+	EventTypeInvestmentCancelled = "investment.cancelled"
+
+	// EventTypeInvestmentCompleted triggers notifications when investment reaches maturity
+	// Queue: propvest.investment.completed
+	// Payload: InvestmentCompletedPayload
+	// Triggered: When investment period ends and returns are calculated
+	// Consumers:
+	//   - Email service (notify user of returns)
+	//   - Notification service (push notification with return details)
+	//   - Payout processor (initiate return payment to wallet)
+	//   - Tax document generator (generate tax forms if needed)
+	EventTypeInvestmentCompleted = "investment.completed"
 )
 
 // IsPending returns true if the event is waiting to be processed

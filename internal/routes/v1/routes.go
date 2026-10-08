@@ -35,6 +35,7 @@ func RegisterRoutes(
 	userHandler *handlers.UserHandler,
 	walletHandler *handlers.WalletHandler,
 	propertyHandler *handlers.PropertyHandler,
+	investmentHandler *handlers.InvestmentHandler,
 	cfg *config.Config,
 ) {
 	// ───────────────────────────────────────────────────────────────────
@@ -215,14 +216,66 @@ func RegisterRoutes(
 	// ───────────────────────────────────────────────────────────────────
 	// INVESTMENT ROUTES (Milestone 5, requires authentication)
 	// ───────────────────────────────────────────────────────────────────
-	// investments := router.Group("/investments")
-	// investments.Use(middleware.Auth())
-	// {
-	//     investments.POST("", investmentHandler.Create)
-	//     investments.GET("", investmentHandler.GetUserInvestments)
-	//     investments.GET("/:id", investmentHandler.Get)
-	//     investments.GET("/portfolio/summary", investmentHandler.GetPortfolioSummary)
-	// }
+	// Investment endpoints for purchasing property slots and managing portfolio.
+	//
+	// AUTHENTICATION:
+	// All investment routes require authentication (auth middleware applied to group).
+	// User can only access their own investments (enforced by user_id from JWT).
+	//
+	// ENDPOINTS:
+	//   POST /investments               - Create new investment (purchase slots)
+	//   GET  /investments               - List user's investments (paginated)
+	//   GET  /investments/:id           - Get single investment details
+	//   GET  /portfolio/summary         - Get portfolio summary (total invested, counts, balances)
+	//
+	// ADMIN ENDPOINTS (separate admin group below)
+	investments := router.Group("/investments")
+	investments.Use(middleware.Auth(cfg))
+	{
+		// POST /api/v1/investments
+		// Creates a new investment (user purchases property slots).
+		// Request body: { "property_id": "uuid", "slots": 10, "idempotency_key": "optional" }
+		investments.POST("", investmentHandler.CreateInvestment)
+
+		// GET /api/v1/investments?page=1&page_size=20
+		// Returns paginated list of user's investments.
+		investments.GET("", investmentHandler.ListMyInvestments)
+
+		// GET /api/v1/investments/:id
+		// Returns single investment details (only if user owns it).
+		investments.GET("/:id", investmentHandler.GetInvestment)
+	}
+
+	// Portfolio summary (separate endpoint for clarity)
+	portfolio := router.Group("/portfolio")
+	portfolio.Use(middleware.Auth(cfg))
+	{
+		// GET /api/v1/portfolio/summary
+		// Returns aggregate portfolio metrics: total invested, active count, wallet balances.
+		portfolio.GET("/summary", investmentHandler.GetPortfolioSummary)
+	}
+
+	// Admin investment endpoints
+	adminInvestments := router.Group("/admin/investments")
+	adminInvestments.Use(middleware.Auth(cfg), middleware.RequireRole("admin"))
+	{
+		// GET /api/v1/admin/investments?status=active&page=1&page_size=20
+		// Lists all investments with optional status filter.
+		adminInvestments.GET("", investmentHandler.ListAllInvestments)
+
+		// GET /api/v1/admin/investments/metrics
+		// Returns platform-wide investment statistics for dashboard.
+		adminInvestments.GET("/metrics", investmentHandler.GetInvestmentMetrics)
+	}
+
+	// Admin property investments (list all investors in a property)
+	adminPropertyInvestments := router.Group("/admin/properties/:id/investments")
+	adminPropertyInvestments.Use(middleware.Auth(cfg), middleware.RequireRole("admin"))
+	{
+		// GET /api/v1/admin/properties/:id/investments?page=1&page_size=20
+		// Returns all investors in a specific property.
+		adminPropertyInvestments.GET("", investmentHandler.ListPropertyInvestments)
+	}
 
 	// ───────────────────────────────────────────────────────────────────
 	// NOTIFICATION ROUTES (Milestone 6, requires authentication)
