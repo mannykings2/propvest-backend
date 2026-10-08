@@ -2,6 +2,7 @@ package dto
 
 import (
 	"github.com/mannykings2/propvest-backend/internal/models"
+	"github.com/mannykings2/propvest-backend/internal/repositories"
 )
 
 // UserToResponse converts a models.User into a UserResponse DTO.
@@ -43,5 +44,59 @@ func WalletToSummary(wallet models.Wallet) WalletSummaryResponse {
 	return WalletSummaryResponse{
 		MainBalance:     wallet.MainBalance,
 		EarningsBalance: wallet.EarningsBalance,
+	}
+}
+
+// InvestmentToResponse converts a models.Investment into an InvestmentResponse DTO.
+// Optionally includes the property details if preloaded.
+func InvestmentToResponse(inv models.Investment) InvestmentResponse {
+	resp := InvestmentResponse{
+		ID:            inv.ID,
+		PropertyID:    inv.PropertyID,
+		Slots:         inv.Slots,
+		AmountKobo:    inv.AmountKobo,
+		UnitPriceKobo: inv.UnitPriceKobo,
+		Currency:      inv.Currency,
+		Status:        inv.Status,
+		Reference:     inv.Reference,
+		CancelledAt:   inv.CancelledAt,
+		CompletedAt:   inv.CompletedAt,
+		RefundedAt:    inv.RefundedAt,
+		CreatedAt:     inv.CreatedAt,
+		UpdatedAt:     inv.UpdatedAt,
+	}
+	
+	// TODO: Include property if preloaded once PropertyToResponse mapper exists
+	// if inv.Property.ID != uuid.Nil {
+	// 	property := PropertyToResponse(inv.Property)
+	// 	resp.Property = &property
+	// }
+	
+	return resp
+}
+
+// InvestmentsToResponse converts a slice of investments to DTOs.
+func InvestmentsToResponse(investments []models.Investment) []InvestmentResponse {
+	responses := make([]InvestmentResponse, len(investments))
+	for i, inv := range investments {
+		responses[i] = InvestmentToResponse(inv)
+	}
+	return responses
+}
+
+// InvestmentMetricsToResponse converts repository metrics to response DTO.
+// Includes naira conversions for convenience (1 naira = 100 kobo).
+func InvestmentMetricsToResponse(metrics *repositories.InvestmentMetrics) InvestmentMetricsResponse {
+	return InvestmentMetricsResponse{
+		TotalInvestments:       metrics.TotalInvestments,
+		TotalAmountKobo:        metrics.TotalAmountKobo,
+		TotalAmountNaira:       float64(metrics.TotalAmountKobo) / 100.0,
+		ActiveInvestments:      metrics.ActiveInvestments,
+		CompletedInvestments:   metrics.CompletedInvestments,
+		CancelledInvestments:   metrics.CancelledInvestments,
+		RefundedInvestments:    metrics.RefundedInvestments,
+		UniqueInvestors:        metrics.UniqueInvestors,
+		AverageInvestmentKobo:  metrics.AverageInvestmentKobo,
+		AverageInvestmentNaira: float64(metrics.AverageInvestmentKobo) / 100.0,
 	}
 }
