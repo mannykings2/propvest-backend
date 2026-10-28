@@ -64,13 +64,30 @@ func (s *notificationService) NotifyWithEmail(ctx context.Context, userID uuid.U
 	s.create(ctx, userID, nType, title, body, metadata)
 	// Enqueue the email for the worker (best-effort; disabled queue just logs).
 	if email != "" {
+		html, text := emailBodyWithLinks(body, metadata)
 		_ = s.mq.Publish(ctx, queue.QueueEmailDispatch, queue.EmailMessage{
 			To:       email,
 			Subject:  title,
-			HTMLBody: "<p>" + body + "</p>",
-			TextBody: body,
+			HTMLBody: html,
+			TextBody: text,
 		})
 	}
+}
+
+// emailBodyWithLinks appends the actionable link when the metadata carries
+// one (today: the data-export download path). Without FRONTEND_URL the
+// message degrades to the previous plain body.
+func emailBodyWithLinks(body string, metadata map[string]any) (html, text string) {
+	html, text = "<p>"+body+"</p>", body
+	path, _ := metadata["download_path"].(string)
+	link := ExportDownloadLink(path)
+	if link == "" {
+		return html, text
+	}
+	html += `<p><a href="` + link + `">Download your data export</a></p>` +
+		`<p style="font-size:12px;color:#666">This link expires in 24 hours.</p>`
+	text += "\n\nDownload your data export (expires in 24 hours): " + link
+	return html, text
 }
 
 // create is the shared path: persist the row, then push realtime.

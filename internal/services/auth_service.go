@@ -858,7 +858,7 @@ func (s *authService) ForgotPassword(ctx context.Context, email string) error {
 		return nil
 	}
 
-	resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.config.BaseURL, plain)
+	resetURL := fmt.Sprintf("%s/reset-password?token=%s", emailOrigin(s.config.BaseURL), plain)
 	body := fmt.Sprintf("Hello %s,\n\nUse the link below to reset your password. It expires in 30 minutes and can only be used once:\n\n%s\n\nIf you didn't request this, you can safely ignore this email.",
 		user.FullName, resetURL)
 	if err := s.mailer.Send(mailer.Email{
@@ -954,7 +954,7 @@ func (s *authService) issueVerificationEmail(ctx context.Context, user *models.U
 		return
 	}
 
-	verifyURL := fmt.Sprintf("%s/verify-email?token=%s", s.config.BaseURL, plain)
+	verifyURL := fmt.Sprintf("%s/verify-email?token=%s", emailOrigin(s.config.BaseURL), plain)
 	body := fmt.Sprintf("Hello %s,\n\nConfirm your email address by opening the link below (valid for 24 hours):\n\n%s\n\nIf you didn't create a PropVest account, you can safely ignore this email.",
 		user.FullName, verifyURL)
 	if err := s.mailer.Send(mailer.Email{

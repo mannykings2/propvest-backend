@@ -2,7 +2,8 @@ package dto
 
 import (
 	"encoding/json"
-	
+
+	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 )
@@ -55,6 +56,7 @@ func InvestmentToResponse(inv models.Investment) InvestmentResponse {
 	resp := InvestmentResponse{
 		ID:            inv.ID,
 		PropertyID:    inv.PropertyID,
+		UserID:        inv.UserID,
 		Slots:         inv.Slots,
 		AmountKobo:    inv.AmountKobo,
 		UnitPriceKobo: inv.UnitPriceKobo,
@@ -74,6 +76,17 @@ func InvestmentToResponse(inv models.Investment) InvestmentResponse {
 	// 	resp.Property = &property
 	// }
 	
+	// Investor identity — projected only when the repository preloaded User
+	// (the admin oversight endpoints). User-facing responses never preload it,
+	// so this stays nil there and nothing new is exposed.
+	if inv.User.ID != uuid.Nil {
+		resp.User = &InvestmentUserSummary{
+			ID:       inv.User.ID,
+			FullName: inv.User.FullName,
+			Email:    inv.User.Email,
+		}
+	}
+
 	return resp
 }
 

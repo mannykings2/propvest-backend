@@ -1703,4 +1703,42 @@ propvest-app/
 
 ---
 
+## Implementation Status (27 Oct 2026)
+
+The gap list from this audit was executed in phases (A → B → C). All are now
+live-verified against the local API:
+
+| Phase | Scope | Status |
+|---|---|---|
+| A | Backend contract fixes surfaced by the audit (binding/error-code alignment, launch policy defaults) | ✅ done (earlier sessions) |
+| B | Email link correctness: password-reset, verify-email, data-export download and one-click unsubscribe all render to the SPA origin (worker restarted with mock mailer; all four link types captured and checked live) | ✅ done |
+| C1 | Admin Support tab + the Staff-tab customer-care view wired to `GET/PATCH /admin/support/tickets` (list, thread, reply, status changes); mock ticket data removed | ✅ done |
+| C2 | Admin Properties: real create (full `CreatePropertyRequest` form), edit (`PATCH`), delete, and a media manager (image upload/cover/delete, document upload/visibility/delete) — all against `/admin/properties` | ✅ done |
+| C3 | Admin Users: edit modal (`PATCH /admin/users/:id`), suspend (reason ≥10 chars), activate, delete (super-admin), with action banner; role/status chips on rows | ✅ done |
+| C4 | Investments oversight: new **Investments** admin tab — metrics cards + filterable investor/property/amount/status table served by `GET /admin/investments` and `/metrics` | ✅ done |
+
+**Backend fixes made while wiring C2–C4:**
+
+1. `GET /admin/investments` returned no investor identity — added `user_id` +
+   a `user` summary (id/full_name/email), preloaded only on the admin list
+   queries, so oversight rows show *who* invested without changing user-facing
+   responses.
+2. `PATCH /admin/properties/:id` updated successfully but answered
+   `not_found` for drafts (it returned via `GetPublicProperty`, which excludes
+   unpublished listings) — now returns the admin view.
+3. `admin_dto.go` request structs used `validate:` tags, which gin's
+   `ShouldBindJSON` ignores — suspension reasons, role changes, KYC decisions
+   and password-reset reasons were never validated at the HTTP layer. Tags
+   converted to `binding:` (a short suspension reason now returns 400 instead
+   of silently succeeding).
+
+**Verification:** frontend eslint 0 errors / 10 tests / build green; backend
+`go build`, `go vet`, `internal/dto` + `internal/services` tests green; live
+smoke on :8081 covered login, investments list+metrics, property
+create→edit→delete, image upload to Cloudinary, user edit/suspend/activate and
+the short-reason 400. Repository unit tests remain blocked by the known
+`CGO_ENABLED=0` sqlite environment issue (56 failures, all the same stub error).
+
+---
+
 **End of Integration Audit Report**

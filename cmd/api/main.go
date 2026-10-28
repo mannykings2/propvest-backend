@@ -224,8 +224,17 @@ func main() {
 	// export carry decrypted BVN/NIN — the one place decryption is legal
 	// without an admin role.
 	consentService := services.NewConsentService(database.DB)
+	// Email links (Phase B2): absolute SPA URLs for reset/verify/export/
+	// unsubscribe. Falls back to BASE_URL for single-origin deployments.
+	frontendURL := cfg.FrontendURL
+	if frontendURL == "" {
+		frontendURL = cfg.BaseURL
+	}
+	services.SetFrontendURL(frontendURL)
+
 	privacyService := services.NewPrivacyService(database.DB, notificationService, auditService, cfg.JWTSecret).
 		WithKYCCipher(cfg.KYCEncryptionKey)
+	services.SetUnsubscribeTokenFn(privacyService.UnsubscribeToken)
 
 	// Future services
 	// adminService := services.NewAdminService(userRepo, propertyRepo, investmentRepo, walletRepo, refreshTokenRepo, auditRecorder)

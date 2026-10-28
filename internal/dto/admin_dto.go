@@ -124,30 +124,30 @@ type AdminUserDetailResponse struct {
 
 // UpdateUserRequest represents admin's request to update user details.
 type UpdateUserRequest struct {
-	FullName  *string `json:"full_name,omitempty" validate:"omitempty,min=2,max=100"`
-	Phone     *string `json:"phone,omitempty" validate:"omitempty,e164"`
-	KYCStatus *string `json:"kyc_status,omitempty" validate:"omitempty,oneof=pending verified rejected"`
+	FullName  *string `json:"full_name,omitempty" binding:"omitempty,min=2,max=100"`
+	Phone     *string `json:"phone,omitempty" binding:"omitempty,e164"`
+	KYCStatus *string `json:"kyc_status,omitempty" binding:"omitempty,oneof=pending verified rejected"`
 	IsActive  *bool   `json:"is_active,omitempty"`
 }
 
 // SuspendUserRequest represents admin's request to suspend a user.
 type SuspendUserRequest struct {
-	Reason string `json:"reason" validate:"required,min=10,max=500"`
+	Reason string `json:"reason" binding:"required,min=10,max=500"`
 }
 
 // ChangeRoleRequest represents super-admin's request to change user role.
 type ChangeRoleRequest struct {
-	NewRole string `json:"new_role" validate:"required,oneof=investor developer staff admin super_admin"`
-	Reason  string `json:"reason" validate:"required,min=10,max=500"`
+	NewRole string `json:"new_role" binding:"required,oneof=investor developer staff admin super_admin"`
+	Reason  string `json:"reason" binding:"required,min=10,max=500"`
 }
 
 // DecideKYCRequest represents admin's KYC approval/rejection decision.
 type DecideKYCRequest struct {
-	Decision string  `json:"decision" validate:"required,oneof=verified rejected"`
-	Reason   *string `json:"reason,omitempty" validate:"omitempty,min=10,max=500"` // Required if rejected
+	Decision string  `json:"decision" binding:"required,oneof=verified rejected"`
+	Reason   *string `json:"reason,omitempty" binding:"omitempty,min=10,max=500"` // Required if rejected
 }
 
 // ForcePasswordResetRequest represents admin's request to force password reset.
 type ForcePasswordResetRequest struct {
-	Reason string `json:"reason" validate:"required,min=10,max=500"`
+	Reason string `json:"reason" binding:"required,min=10,max=500"`
 }

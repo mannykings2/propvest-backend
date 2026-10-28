@@ -298,6 +298,14 @@ func main() {
 	// wiped) and executes erasure requests whose 30-day grace has ended.
 	privacyService := services.NewPrivacyService(db, nil, services.NewAuditService(repositories.NewAuditRepository(db)), cfg.JWTSecret).
 		WithKYCCipher(cfg.KYCEncryptionKey)
+	// Email links built by worker-sent mail (export ready, notifications)
+	// must target the SPA origin, same as the API process.
+	frontendURL := cfg.FrontendURL
+	if frontendURL == "" {
+		frontendURL = cfg.BaseURL
+	}
+	services.SetFrontendURL(frontendURL)
+	services.SetUnsubscribeTokenFn(privacyService.UnsubscribeToken)
 	stopPrivacySweep := startPrivacySweeper(ctx, privacyService)
 	defer stopPrivacySweep()
 

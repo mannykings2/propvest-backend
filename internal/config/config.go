@@ -21,7 +21,12 @@ type Config struct {
 	// ── Application ──────────────────────────────────────────────
 	AppEnv  string `mapstructure:"APP_ENV"`
 	Port    string `mapstructure:"PORT"`
-	BaseURL string `mapstructure:"BASE_URL"` // public URL, used in email links
+	BaseURL string `mapstructure:"BASE_URL"` // public URL, used in payment callbacks
+	// FrontendURL is the SPA origin used for links INSIDE emails (password
+	// reset, email verification, data export, unsubscribe). Falls back to
+	// BaseURL when unset — correct for single-origin deployments where the
+	// proxy routes /api to the backend; dev splits :3000/:8081 so .env sets it.
+	FrontendURL string `mapstructure:"FRONTEND_URL"`
 
 	// ── Database ─────────────────────────────────────────────────
 	DatabaseURL       string `mapstructure:"DATABASE_URL"`
@@ -220,6 +225,9 @@ func setDefaults() {
 	// a reverse proxy overrides this with the proxy's CIDR.
 	viper.SetDefault("TRUSTED_PROXIES", "127.0.0.1/32,::1/128")
 
+	// SPA origin for email links; empty → falls back to BASE_URL at wiring time.
+	viper.SetDefault("FRONTEND_URL", "")
+
 	viper.SetDefault("SMS_PROVIDER", "mock")
 	viper.SetDefault("EMAIL_PROVIDER", "mock")
 	viper.SetDefault("PAYMENT_PROVIDER", "mock")
@@ -363,6 +371,7 @@ func bindEnvironmentVariables() {
 		"APP_ENV",
 		"PORT",
 		"BASE_URL",
+		"FRONTEND_URL",
 
 		"DATABASE_URL",
 		"DB_MAX_OPEN_CONNS",
@@ -416,6 +425,7 @@ func bindEnvironmentVariables() {
 
 		"REQUIRE_EMAIL_VERIFICATION",
 		"REQUIRE_KYC_FOR_INVESTMENT",
+		"REQUIRE_REGISTRATION_CONSENT",
 		"MIN_INVESTMENT_AMOUNT",
 		"MAX_INVESTMENT_AMOUNT",
 		"MIN_DEPOSIT_AMOUNT",

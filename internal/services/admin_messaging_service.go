@@ -292,11 +292,22 @@ func (s *adminMessagingService) publishBulkEmails(ctx context.Context, users []*
 			continue // Opted out (NDPA objection) — never send
 		}
 
+		// One-click unsubscribe on EVERY bulk message (Phase B2): the link is
+		// per-user and resolves to the SPA landing page, which calls the same
+		// /unsubscribe endpoint an API client would.
+		html := htmlBody
+		text := stripHTML(htmlBody) // Simple text version
+		if link := UnsubscribeLink(user.ID); link != "" {
+			html += `<hr><p style="font-size:12px;color:#666">You are receiving this because you opted in to PropVest updates. ` +
+				`<a href="` + link + `">Unsubscribe from marketing</a></p>`
+			text += "\n\nUnsubscribe: " + link
+		}
+
 		msg := queue.EmailMessage{
 			To:       user.Email,
 			Subject:  subject,
-			HTMLBody: htmlBody,
-			TextBody: stripHTML(htmlBody), // Simple text version
+			HTMLBody: html,
+			TextBody: text,
 		}
 
 		if err := s.mq.Publish(ctx, queue.QueueEmailDispatch, msg); err != nil {
@@ -328,9 +339,14 @@ func (s *adminMessagingService) publishBulkSMS(ctx context.Context, users []*mod
 			continue // Opted out (NDPA objection) — never send
 		}
 
+		body := message
+		if link := UnsubscribeLink(user.ID); link != "" {
+			body += " Opt-out: " + link
+		}
+
 		msg := queue.SMSMessage{
 			To:      user.Phone,
-			Message: message,
+			Message: body,
 		}
 
 		if err := s.mq.Publish(ctx, queue.QueueSMSDispatch, msg); err != nil {

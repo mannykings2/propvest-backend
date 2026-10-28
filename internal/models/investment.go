@@ -52,6 +52,11 @@ type Investment struct {
 
 	// Association for eager-loading the property in portfolio views.
 	Property Property `gorm:"foreignKey:PropertyID" json:"property,omitempty"`
+
+	// Association for eager-loading the investor in ADMIN oversight views only.
+	// json:"-" — identity is projected through the DTO (never raw-serialized),
+	// and user-facing responses are unaffected since they don't preload it.
+	User User `gorm:"foreignKey:UserID" json:"-"`
 }
 
 // Investment status constants.

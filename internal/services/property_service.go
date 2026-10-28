@@ -55,7 +55,7 @@ type PropertyService interface {
 	//   - Draft: all fields editable
 	//   - Active/Funded: financial fields locked if investments exist
 	//   - Completed: minimal edits allowed
-	UpdateProperty(ctx context.Context, adminID uuid.UUID, propertyID uuid.UUID, req dto.UpdatePropertyRequest) (*dto.PropertyResponse, error)
+	UpdateProperty(ctx context.Context, adminID uuid.UUID, propertyID uuid.UUID, req dto.UpdatePropertyRequest) (*dto.PropertyAdminResponse, error)
 
 	// DeleteProperty soft-deletes a property.
 	// Fails if property has investments (protects financial audit trail).
@@ -249,7 +249,7 @@ func (s *propertyService) CreateProperty(ctx context.Context, adminID uuid.UUID,
 }
 
 // UpdateProperty updates an existing property.
-func (s *propertyService) UpdateProperty(ctx context.Context, adminID uuid.UUID, propertyID uuid.UUID, req dto.UpdatePropertyRequest) (*dto.PropertyResponse, error) {
+func (s *propertyService) UpdateProperty(ctx context.Context, adminID uuid.UUID, propertyID uuid.UUID, req dto.UpdatePropertyRequest) (*dto.PropertyAdminResponse, error) {
 	// Fetch existing property
 	property, err := s.propertyRepo.FindByID(ctx, propertyID)
 	if err != nil {
@@ -369,8 +369,9 @@ func (s *propertyService) UpdateProperty(ctx context.Context, adminID uuid.UUID,
 
 	logger.Info("property updated", "property_id", propertyID, "admin_id", adminID)
 
-	// Return updated property
-	return s.GetPublicProperty(ctx, propertyID)
+	// Return the ADMIN view of the property. GetPublicProperty excludes drafts,
+	// so a successful edit of an unpublished listing used to answer "not found".
+	return s.GetAdminProperty(ctx, propertyID)
 }
 
 // DeleteProperty soft-deletes a property.

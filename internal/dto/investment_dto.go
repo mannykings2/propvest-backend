@@ -20,10 +20,14 @@ type CreateInvestmentRequest struct {
 
 // InvestmentResponse is the public representation of an investment.
 type InvestmentResponse struct {
-	ID            uuid.UUID         `json:"id"`
-	PropertyID    uuid.UUID         `json:"property_id"`
-	Property      *PropertyResponse `json:"property,omitempty"`
-	Slots         int               `json:"slots"`
+	ID         uuid.UUID `json:"id"`
+	PropertyID uuid.UUID `json:"property_id"`
+	// UserID is always populated; User (name/email) only when the repository
+	// preloaded it — i.e. on the admin oversight endpoints.
+	UserID     uuid.UUID                `json:"user_id"`
+	User       *InvestmentUserSummary   `json:"user,omitempty"`
+	Property   *PropertyResponse        `json:"property,omitempty"`
+	Slots      int                      `json:"slots"`
 	AmountKobo    int64             `json:"amount_kobo"`
 	UnitPriceKobo int64             `json:"unit_price_kobo"` // Price snapshot
 	Currency      string            `json:"currency"`
@@ -131,6 +135,15 @@ type CancelInvestmentRequest struct {
 }
 
 // InvestmentMetricsResponse holds platform-wide investment statistics for admin dashboard.
+// InvestmentUserSummary identifies the investor behind an investment for
+// admin oversight (GET /admin/investments). Deliberately minimal: id + how to
+// address them. No PII beyond name/email.
+type InvestmentUserSummary struct {
+	ID       uuid.UUID `json:"id"`
+	FullName string    `json:"full_name"`
+	Email    string    `json:"email"`
+}
+
 type InvestmentMetricsResponse struct {
 	TotalInvestments      int64   `json:"total_investments"`
 	TotalAmountKobo       int64   `json:"total_amount_kobo"`

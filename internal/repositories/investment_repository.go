@@ -204,6 +204,7 @@ func (r *investmentRepository) ListByProperty(ctx context.Context, propertyID uu
 
 	var invs []models.Investment
 	if err := q.Preload("Property").
+		Preload("User"). // admin oversight: investor identity in the response
 		Order("created_at DESC").
 		Limit(limit).
 		Offset(offset).
@@ -231,6 +232,7 @@ func (r *investmentRepository) ListAll(ctx context.Context, status string, limit
 
 	var invs []models.Investment
 	if err := q.Preload("Property").
+		Preload("User"). // admin oversight: investor identity in the response
 		Order("created_at DESC").
 		Limit(limit).
 		Offset(offset).
