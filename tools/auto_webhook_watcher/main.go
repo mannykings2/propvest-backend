@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -37,7 +36,7 @@ const (
 func main() {
 	fmt.Println("🔍 Auto Webhook Watcher Started")
 	fmt.Println("Watching for new payments and auto-triggering webhooks...")
-	fmt.Println("Press Ctrl+C to stop\n")
+	fmt.Println("Press Ctrl+C to stop")
 
 	processedRefs := make(map[string]bool)
 

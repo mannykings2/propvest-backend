@@ -397,8 +397,8 @@ func TestErrorClassification_ChainedWrapping(t *testing.T) {
 func TestErrorClassification_MultipleErrors(t *testing.T) {
 	// Simulate a consumer decision flow
 	testCases := []struct {
-		err           error
-		shouldRetry   bool
+		err            error
+		shouldRetry    bool
 		shouldRouteDLQ bool
 	}{
 		{ErrDatabaseConnection, true, false},

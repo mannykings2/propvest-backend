@@ -15,9 +15,12 @@ type WalletRepository interface {
 	Create(ctx context.Context, wallet *models.Wallet) error
 	FindByID(ctx context.Context, id uuid.UUID) (*models.Wallet, error)
 	FindByUserID(ctx context.Context, userID uuid.UUID) (*models.Wallet, error)
-	Update(ctx context.Context, wallet *models.Wallet) error
-	UpdateBalance(ctx context.Context, walletID uuid.UUID, mainBalance, earningsBalance int64) error
-	CreateTransaction(ctx context.Context, tx *models.WalletTransaction) error
+	// Update, UpdateBalance, CreateTransaction and TransactionExists take a
+	// *gorm.DB so callers already inside a transaction can pass their tx and
+	// stay atomic. Pass nil to use the repository's own connection.
+	Update(ctx context.Context, db *gorm.DB, wallet *models.Wallet) error
+	UpdateBalance(ctx context.Context, db *gorm.DB, walletID uuid.UUID, mainBalance, earningsBalance int64) error
+	CreateTransaction(ctx context.Context, db *gorm.DB, record *models.WalletTransaction) error
 	GetTransactions(ctx context.Context, walletID uuid.UUID, limit, offset int) ([]models.WalletTransaction, error)
 	GetTransactionByReference(ctx context.Context, reference string) (*models.WalletTransaction, error)
 
@@ -31,7 +34,7 @@ type WalletRepository interface {
 	FindByUserIDForUpdate(ctx context.Context, userID uuid.UUID, tx *gorm.DB) (*models.Wallet, error)
 	// TransactionExists reports whether a ledger row with the reference exists
 	// (idempotency check).
-	TransactionExists(ctx context.Context, reference string) (bool, error)
+	TransactionExists(ctx context.Context, db *gorm.DB, reference string) (bool, error)
 	// ListTransactions returns filtered, paginated ledger rows for a user plus a
 	// total count for pagination metadata.
 	ListTransactions(ctx context.Context, userID uuid.UUID, txType, status string, limit, offset int) ([]models.WalletTransaction, int64, error)
@@ -135,8 +138,11 @@ func (r *walletRepository) FindByUserID(ctx context.Context, userID uuid.UUID) (
 
 // Update saves changes to an existing wallet.
 // WARNING: For balance updates, prefer UpdateBalance() which uses optimistic locking.
-func (r *walletRepository) Update(ctx context.Context, wallet *models.Wallet) error {
-	return r.WithContext(ctx).Save(wallet).Error
+func (r *walletRepository) Update(ctx context.Context, db *gorm.DB, wallet *models.Wallet) error {
+	if db == nil {
+		db = r.db
+	}
+	return db.WithContext(ctx).Save(wallet).Error
 }
 
 // UpdateBalance updates wallet balances with row-level locking to prevent race conditions.
@@ -156,10 +162,13 @@ func (r *walletRepository) Update(ctx context.Context, wallet *models.Wallet) er
 //       if newBalance < 0 {
 //           return ErrInsufficientFunds
 //       }
-//       return walletRepo.UpdateBalance(ctx, wallet.ID, newBalance, wallet.EarningsBalance)
+//       return walletRepo.UpdateBalance(ctx, tx, wallet.ID, newBalance, wallet.EarningsBalance)
 //   })
-func (r *walletRepository) UpdateBalance(ctx context.Context, walletID uuid.UUID, mainBalance, earningsBalance int64) error {
-	result := r.WithContext(ctx).Model(&models.Wallet{}).
+func (r *walletRepository) UpdateBalance(ctx context.Context, db *gorm.DB, walletID uuid.UUID, mainBalance, earningsBalance int64) error {
+	if db == nil {
+		db = r.db
+	}
+	result := db.WithContext(ctx).Model(&models.Wallet{}).
 		Where("id = ?", walletID).
 		Updates(map[string]interface{}{
 			"main_balance":     mainBalance,
@@ -207,8 +216,15 @@ func (r *walletRepository) FindByUserIDForUpdate(ctx context.Context, userID uui
 //
 // Every balance change must create a corresponding transaction record.
 // This is how we maintain an audit trail and can reconcile balances.
-func (r *walletRepository) CreateTransaction(ctx context.Context, tx *models.WalletTransaction) error {
-	return r.WithContext(ctx).Create(tx).Error
+//
+// db MUST be the caller's transaction when this runs inside one, otherwise the
+// ledger row is written on a separate connection and the outer transaction can
+// deadlock waiting on the wallet row lock.
+func (r *walletRepository) CreateTransaction(ctx context.Context, db *gorm.DB, record *models.WalletTransaction) error {
+	if db == nil {
+		db = r.db
+	}
+	return db.WithContext(ctx).Create(record).Error
 }
 
 // GetTransactions retrieves transaction history for a wallet with pagination.
@@ -242,9 +258,12 @@ func (r *walletRepository) GetTransactionByReference(ctx context.Context, refere
 // TransactionExists checks if a transaction with the given reference exists.
 // Returns true if exists, false otherwise.
 // This is more efficient than GetTransactionByReference when you only need existence.
-func (r *walletRepository) TransactionExists(ctx context.Context, reference string) (bool, error) {
+func (r *walletRepository) TransactionExists(ctx context.Context, db *gorm.DB, reference string) (bool, error) {
+	if db == nil {
+		db = r.db
+	}
 	var count int64
-	err := r.WithContext(ctx).Model(&models.WalletTransaction{}).Where("reference = ?", reference).Count(&count).Error
+	err := db.WithContext(ctx).Model(&models.WalletTransaction{}).Where("reference = ?", reference).Count(&count).Error
 	if err != nil {
 		return false, err
 	}

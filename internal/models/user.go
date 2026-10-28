@@ -74,6 +74,28 @@ type User struct {
 	// Future feature: Require email verification before certain actions
 	EmailVerified bool `gorm:"default:false;not null" json:"email_verified"`
 
+	// Profile detail fields (Phase 2, Workstream D2). The Profile screen has
+	// always offered these edits; until migration 000028 they were silently
+	// dropped because the columns did not exist.
+	Address    *string `json:"address,omitempty"`
+	Occupation *string `json:"occupation,omitempty"`
+	Employer   *string `json:"employer,omitempty"`
+
+	// Suspension tracking (Milestone 7 - Admin Management)
+	// When an admin suspends a user, these fields create an audit trail
+	SuspendedAt     *time.Time `json:"suspended_at,omitempty"`
+	SuspendedBy     *uuid.UUID `json:"suspended_by,omitempty"` // Admin user ID
+	SuspendedReason *string    `json:"suspended_reason,omitempty"`
+
+	// Risk flag (Phase 8.4): an AML freeze marker that is NOT a suspension —
+	// the account stays active, but withdrawals are blocked pending review.
+	// Set manually via POST /admin/risk/users/:id/flag or automatically by a
+	// screening hit. Cleared through the risk-alert triage flow.
+	RiskFlagged     bool       `gorm:"not null;default:false" json:"risk_flagged"`
+	RiskFlagReason  *string    `json:"risk_flag_reason,omitempty"`
+	RiskFlaggedAt   *time.Time `json:"risk_flagged_at,omitempty"`
+	RiskFlaggedBy   *uuid.UUID `gorm:"type:uuid" json:"risk_flagged_by,omitempty"`
+
 	// GORM automatically manages these three fields when you use
 	// gorm.Model or declare them explicitly like this.
 	// CreatedAt: set once on INSERT, never updated
@@ -87,6 +109,69 @@ type User struct {
 	// when you use Preload("Wallet"). The foreign key is inferred
 	// as wallet.user_id matching user.id.
 	Wallet Wallet `gorm:"foreignKey:UserID" json:"wallet,omitempty"`
+}
+
+// Role constants define the user role hierarchy (Milestone 7)
+// Hierarchy (lowest to highest privilege):
+//   1. investor - Can invest, manage portfolio, fund wallet
+//   2. developer - Can create properties, upload documents
+//   3. staff - Can view reports, assist users
+//   4. admin - Can manage users, approve properties, view analytics
+//   5. super_admin - Can manage admins, change roles, access all features
+const (
+	RoleInvestor   = "investor"
+	RoleDeveloper  = "developer"
+	RoleStaff      = "staff"
+	RoleAdmin      = "admin"
+	RoleSuperAdmin = "super_admin"
+)
+
+// IsAdmin checks if user has admin or super_admin role
+func (u *User) IsAdmin() bool {
+	return u.Role == RoleAdmin || u.Role == RoleSuperAdmin
+}
+
+// IsSuperAdmin checks if user has super_admin role
+func (u *User) IsSuperAdmin() bool {
+	return u.Role == RoleSuperAdmin
+}
+
+// CanManageRole checks if user can change another user's role
+// Rules:
+//   - Super admins can change any role (including admin → super_admin)
+//   - Admins can change user/developer/staff roles but NOT admin or super_admin
+//   - Others cannot change roles
+func (u *User) CanManageRole(targetCurrentRole string) bool {
+	if u.Role == RoleSuperAdmin {
+		return true // Super admin can manage any role
+	}
+	if u.Role == RoleAdmin {
+		// Admin can manage user, developer, staff but NOT admin or super_admin
+		return targetCurrentRole != RoleAdmin && targetCurrentRole != RoleSuperAdmin
+	}
+	return false // Others cannot manage roles
+}
+
+// IsSuspended checks if the user account is currently suspended
+func (u *User) IsSuspended() bool {
+	return u.SuspendedAt != nil
+}
+
+// Suspend marks the user as suspended with admin details and reason
+func (u *User) Suspend(adminID uuid.UUID, reason string) {
+	now := time.Now()
+	u.SuspendedAt = &now
+	u.SuspendedBy = &adminID
+	u.SuspendedReason = &reason
+	u.IsActive = false
+}
+
+// Activate removes suspension and re-enables the account
+func (u *User) Activate() {
+	u.SuspendedAt = nil
+	u.SuspendedBy = nil
+	u.SuspendedReason = nil
+	u.IsActive = true
 }
 
 // BeforeCreate is a GORM hook — it runs automatically before every INSERT.

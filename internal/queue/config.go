@@ -44,17 +44,17 @@ var (
 	// Deposits are medium priority (5) and processed with moderate concurrency (10).
 	// Requirements: 12.1, 12.2, 12.3, 12.4, 12.6, 14.3
 	DepositQueueConfig = QueueConfig{
-		Name:       "propvest.deposit.confirmed",
-		Durable:    true,
-		AutoDelete: false,
-		Exclusive:  false,
-		MaxLength:  10000,                      // Production default (Req 14.3)
-		TTL:        48 * 60 * 60 * 1000,        // 48 hours in milliseconds
-		Priority:   5,                          // Medium priority (Req 12.4)
-		DLXName:    "propvest.dlx",             // Dead letter exchange
-		DLXKey:     "deposit.dlq",              // DLQ routing key
-		PrefetchCount: 10,                      // Fetch 10 messages at a time (Req 12.6)
-		Concurrency:   10,                      // 10 concurrent handlers (Req 14.3)
+		Name:          "propvest.deposit.confirmed",
+		Durable:       true,
+		AutoDelete:    false,
+		Exclusive:     false,
+		MaxLength:     10000,               // Production default (Req 14.3)
+		TTL:           48 * 60 * 60 * 1000, // 48 hours in milliseconds
+		Priority:      5,                   // Medium priority (Req 12.4)
+		DLXName:       "propvest.dlx",      // Dead letter exchange
+		DLXKey:        "deposit.dlq",       // DLQ routing key
+		PrefetchCount: 10,                  // Fetch 10 messages at a time (Req 12.6)
+		Concurrency:   10,                  // 10 concurrent handlers (Req 14.3)
 	}
 
 	// WithdrawalQueueConfig configures the withdrawal processing queue.
@@ -62,17 +62,17 @@ var (
 	// Lower concurrency (5) due to bank API rate limits.
 	// Requirements: 12.1, 12.2, 12.3, 12.4, 12.6, 14.3
 	WithdrawalQueueConfig = QueueConfig{
-		Name:       "propvest.withdrawal.requested",
-		Durable:    true,
-		AutoDelete: false,
-		Exclusive:  false,
-		MaxLength:  10000,                      // Production default (Req 14.3)
-		TTL:        48 * 60 * 60 * 1000,        // 48 hours
-		Priority:   10,                         // Highest priority - money locked (Req 12.4)
-		DLXName:    "propvest.dlx",
-		DLXKey:     "withdrawal.dlq",
-		PrefetchCount: 5,                       // Lower prefetch for rate-limited operations
-		Concurrency:   5,                       // Lower concurrency for bank API (Req 14.3)
+		Name:          "propvest.withdrawal.requested",
+		Durable:       true,
+		AutoDelete:    false,
+		Exclusive:     false,
+		MaxLength:     10000,               // Production default (Req 14.3)
+		TTL:           48 * 60 * 60 * 1000, // 48 hours
+		Priority:      10,                  // Highest priority - money locked (Req 12.4)
+		DLXName:       "propvest.dlx",
+		DLXKey:        "withdrawal.dlq",
+		PrefetchCount: 5, // Lower prefetch for rate-limited operations
+		Concurrency:   5, // Lower concurrency for bank API (Req 14.3)
 	}
 
 	// NotificationQueueConfig configures the notification dispatch queue.
@@ -80,17 +80,17 @@ var (
 	// Higher concurrency (20) since email/SMS services can handle parallel requests.
 	// Requirements: 12.1, 12.2, 12.3, 12.4, 12.6, 14.3
 	NotificationQueueConfig = QueueConfig{
-		Name:       "propvest.notification.dispatch",
-		Durable:    true,
-		AutoDelete: false,
-		Exclusive:  false,
-		MaxLength:  10000,                      // Production default (Req 14.3)
-		TTL:        48 * 60 * 60 * 1000,        // 48 hours
-		Priority:   1,                          // Lowest priority (Req 12.4)
-		DLXName:    "propvest.dlx",
-		DLXKey:     "notification.dlq",
-		PrefetchCount: 20,                      // High prefetch for high-throughput
-		Concurrency:   20,                      // High concurrency (Req 14.3)
+		Name:          "propvest.notification.dispatch",
+		Durable:       true,
+		AutoDelete:    false,
+		Exclusive:     false,
+		MaxLength:     10000,               // Production default (Req 14.3)
+		TTL:           48 * 60 * 60 * 1000, // 48 hours
+		Priority:      1,                   // Lowest priority (Req 12.4)
+		DLXName:       "propvest.dlx",
+		DLXKey:        "notification.dlq",
+		PrefetchCount: 20, // High prefetch for high-throughput
+		Concurrency:   20, // High concurrency (Req 14.3)
 	}
 
 	// ReceiptQueueConfig configures the receipt generation queue.
@@ -98,17 +98,17 @@ var (
 	// Medium concurrency (10) for PDF generation and email delivery.
 	// Requirements: 12.1, 12.2, 12.3, 12.4, 12.6, 14.3
 	ReceiptQueueConfig = QueueConfig{
-		Name:       "propvest.receipt.generate",
-		Durable:    true,
-		AutoDelete: false,
-		Exclusive:  false,
-		MaxLength:  10000,                      // Production default (Req 14.3)
-		TTL:        48 * 60 * 60 * 1000,        // 48 hours
-		Priority:   1,                          // Low priority (Req 12.4)
-		DLXName:    "propvest.dlx",
-		DLXKey:     "receipt.dlq",
-		PrefetchCount: 10,                      // Standard prefetch
-		Concurrency:   10,                      // Standard concurrency (Req 14.3)
+		Name:          "propvest.receipt.generate",
+		Durable:       true,
+		AutoDelete:    false,
+		Exclusive:     false,
+		MaxLength:     10000,               // Production default (Req 14.3)
+		TTL:           48 * 60 * 60 * 1000, // 48 hours
+		Priority:      1,                   // Low priority (Req 12.4)
+		DLXName:       "propvest.dlx",
+		DLXKey:        "receipt.dlq",
+		PrefetchCount: 10, // Standard prefetch
+		Concurrency:   10, // Standard concurrency (Req 14.3)
 	}
 )
 
@@ -117,8 +117,8 @@ var (
 // Requirement 14.2: Development defaults
 func GetDevelopmentConfig(baseConfig QueueConfig) QueueConfig {
 	config := baseConfig
-	config.MaxLength = 100        // Lower queue depth for dev (Req 14.2)
-	config.Concurrency = 2        // Lower concurrency for dev (Req 14.2)
+	config.MaxLength = 100 // Lower queue depth for dev (Req 14.2)
+	config.Concurrency = 2 // Lower concurrency for dev (Req 14.2)
 	return config
 }
 
@@ -127,7 +127,7 @@ func GetDevelopmentConfig(baseConfig QueueConfig) QueueConfig {
 // Requirement 14.3: Production defaults
 func GetProductionConfig(baseConfig QueueConfig) QueueConfig {
 	config := baseConfig
-	config.MaxLength = 10000      // Higher queue depth for production (Req 14.3)
+	config.MaxLength = 10000 // Higher queue depth for production (Req 14.3)
 	// Concurrency is already set to production values in base configs
 	return config
 }

@@ -29,6 +29,14 @@ type RegisterRequest struct {
 	Phone string `json:"phone" binding:"required,min=10,max=15" example:"+2348012345678"`
 	// Phone is required at registration and must be in E.164 format (+2348012345678).
 	// We validate Nigerian phone numbers specifically in the service layer.
+
+	// Phase 9.1 (NDPA consent rules): terms + privacy acceptance are required
+	// for signup when REQUIRE_REGISTRATION_CONSENT is on (production default).
+	// Marketing is a SEPARATE, optional opt-in — declining it must never stop
+	// the signup, or the consent isn't "freely given".
+	AcceptTerms         bool `json:"accept_terms" example:"true"`
+	AcceptPrivacyPolicy bool `json:"accept_privacy_policy" example:"true"`
+	MarketingConsent    bool `json:"marketing_consent" example:"false"`
 }
 
 // RegisterResponse is what the client receives after successful registration.

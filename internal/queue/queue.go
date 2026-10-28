@@ -33,6 +33,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -44,22 +45,23 @@ import (
 // Queue names. Keeping them as constants avoids typos between publisher and
 // consumer (a mismatched name silently drops messages).
 const (
-	QueueEmailDispatch      = "propvest.email.dispatch"      // worker sends emails
-	QueueSMSDispatch        = "propvest.sms.dispatch"        // worker sends SMS
-	QueueWithdrawalProcess  = "propvest.withdrawal.process"  // worker processes payouts
-	QueueRealtimePush       = "propvest.realtime.push"       // API pushes to WebSocket clients
-	QueueDepositReceipt     = "propvest.deposit.receipt"     // worker emails deposit receipts
+	QueueEmailDispatch     = "propvest.email.dispatch"     // worker sends emails
+	QueueSMSDispatch       = "propvest.sms.dispatch"       // worker sends SMS
+	QueueWithdrawalProcess = "propvest.withdrawal.process" // worker processes payouts
+	QueueRealtimePush      = "propvest.realtime.push"      // API pushes to WebSocket clients
+	QueueDepositReceipt    = "propvest.deposit.receipt"    // worker emails deposit receipts
+	QueueBusinessEvents    = "propvest.business.events"    // worker turns investment/property events into notifications
 )
 
 // Client is the queue façade used by the rest of the app. It is safe for
 // concurrent use.
 type Client struct {
-	url      string
-	mu       sync.RWMutex
-	conn     *amqp.Connection
-	channel  *amqp.Channel
-	enabled  bool // false => disabled/no-op mode
-	closed   bool
+	url     string
+	mu      sync.RWMutex
+	conn    *amqp.Connection
+	channel *amqp.Channel
+	enabled bool // false => disabled/no-op mode
+	closed  bool
 }
 
 // New creates a queue client and attempts to connect. It NEVER returns an error:
@@ -95,7 +97,7 @@ func (c *Client) connect() error {
 	// Declare every queue as durable so messages survive a broker restart.
 	for _, q := range []string{
 		QueueEmailDispatch, QueueSMSDispatch, QueueWithdrawalProcess,
-		QueueRealtimePush, QueueDepositReceipt,
+		QueueRealtimePush, QueueDepositReceipt, QueueBusinessEvents,
 	} {
 		if _, err := ch.QueueDeclare(q, true /*durable*/, false, false, false, nil); err != nil {
 			_ = ch.Close()
@@ -116,6 +118,30 @@ func (c *Client) Enabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.enabled
+}
+
+// Ping reports whether the client can still reach the broker. It is used by
+// the readiness probe: it checks the live connection/channel state instead of
+// the configuration, so a broker outage is visible without publishing.
+//
+// In disabled mode (no RABBITMQ_URL, or the initial dial failed) it returns an
+// error — readiness must not claim a queue that was never connected.
+func (c *Client) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.enabled || c.conn == nil || c.channel == nil {
+		return errors.New("queue is not connected")
+	}
+	if c.closed || c.conn.IsClosed() {
+		return errors.New("queue connection is closed")
+	}
+	if c.channel.IsClosed() {
+		return errors.New("queue channel is closed")
+	}
+	return nil
 }
 
 // Publish marshals v to JSON and publishes it to the named queue as a persistent

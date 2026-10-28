@@ -26,13 +26,20 @@ type UserResponse struct {
 	KYCStatus     string    `json:"kyc_status"`
 	Role          string    `json:"role"`
 	IsActive      bool      `json:"is_active"`
+	Address       *string   `json:"address,omitempty"`
+	Occupation    *string   `json:"occupation,omitempty"`
+	Employer      *string   `json:"employer,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
 // UpdateProfileRequest is used for PATCH /api/v1/users/me
-// Allows updating the user's full name
+// full_name stays required (the Profile screen always sends it); the other
+// fields are optional so a name-only edit still works.
 type UpdateProfileRequest struct {
-	FullName string `json:"full_name" binding:"required,min=2,max=100"`
+	FullName   string  `json:"full_name" binding:"required,min=2,max=100"`
+	Address    *string `json:"address,omitempty" binding:"omitempty,max=500"`
+	Occupation *string `json:"occupation,omitempty" binding:"omitempty,max=120"`
+	Employer   *string `json:"employer,omitempty" binding:"omitempty,max=120"`
 }
 
 // ChangePasswordRequest is used for PATCH /api/v1/users/password

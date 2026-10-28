@@ -111,6 +111,13 @@ func NewMockProvider() *MockProvider {
 //
 // RETURNS:
 // String "mock" to identify this provider in logs and database records.
+// FetchSettlements: the mock provider has no settlement feed. Returning an
+// empty slice (not an error) lets the scheduled import run clean in
+// development — it reports created=0 instead of alarming every 6 hours.
+func (m *MockProvider) FetchSettlements(ctx context.Context, from, to time.Time) ([]SettlementReport, error) {
+	return nil, nil
+}
+
 func (m *MockProvider) Name() string {
 	return "mock"
 }

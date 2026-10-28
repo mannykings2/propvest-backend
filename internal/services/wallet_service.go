@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -46,18 +47,28 @@ type WalletService interface {
 	GetTransactionHistory(ctx context.Context, userID uuid.UUID, txType, status string, page, limit int) ([]dto.TransactionResponse, int64, error)
 	// VerifyWebhookSignature exposes the provider's signature check to the handler.
 	VerifyWebhookSignature(signature string, body []byte) bool
+
+	// ListBanks returns the selectable Nigerian bank list (static CBN codes).
+	ListBanks() []dto.BankResponse
+	// VerifyAccount resolves an account number at a bank to its true name.
+	VerifyAccount(ctx context.Context, req dto.VerifyAccountRequest) (*dto.VerifyAccountResponse, error)
+	// TransferEarnings moves funds from the earnings balance to the main
+	// balance in one locked transaction with a single ledger row.
+	TransferEarnings(ctx context.Context, userID uuid.UUID, amountKobo int64) (*dto.WalletResponse, error)
 }
 
 type walletService struct {
-	walletRepo   repositories.WalletRepository
-	userRepo     repositories.UserRepository
-	paymentRepo  repositories.PaymentRepository
-	outboxRepo   repositories.OutboxRepository
-	provider     payments.Provider
-	notifier     NotificationService
-	mq           *queue.Client
-	cfg          *config.Config
-	db           *gorm.DB
+	walletRepo  repositories.WalletRepository
+	userRepo    repositories.UserRepository
+	paymentRepo repositories.PaymentRepository
+	outboxRepo  repositories.OutboxRepository
+	provider    payments.Provider
+	notifier    NotificationService
+	mq          *queue.Client
+	cfg         *config.Config
+	db          *gorm.DB
+	ledger      LedgerService // Phase 7: every money mutation posts a balanced journal
+	risk        RiskService   // Phase 8: blocking AML rules on the withdrawal path (nil-safe)
 }
 
 // NewWalletService constructs the wallet service with all its collaborators.
@@ -71,6 +82,8 @@ func NewWalletService(
 	mq *queue.Client,
 	cfg *config.Config,
 	db *gorm.DB,
+	ledger LedgerService,
+	risk RiskService,
 ) WalletService {
 	return &walletService{
 		walletRepo:  walletRepo,
@@ -82,6 +95,8 @@ func NewWalletService(
 		mq:          mq,
 		cfg:         cfg,
 		db:          db,
+		ledger:      ledger,
+		risk:        risk,
 	}
 }
 
@@ -171,6 +186,15 @@ func (s *walletService) CreditFromPaymentReference(ctx context.Context, referenc
 		return apperrors.ErrExternal // requeue: transient provider issue
 	}
 	if verify.Status != "success" {
+		// "pending" means the gateway has not settled the charge yet: leave the
+		// payment pending so the next webhook or the worker's deposit
+		// reconciliation sweep can finish it. Only an explicit negative verdict
+		// closes the payment.
+		if verify.Status == "pending" {
+			log.Info("payment not settled yet; leaving pending for reconciliation",
+				"reference", reference, "status", verify.Status)
+			return nil
+		}
 		_ = s.paymentRepo.MarkFailed(ctx, reference, datatypes.JSON(rawPayload))
 		return nil
 	}
@@ -178,7 +202,7 @@ func (s *walletService) CreditFromPaymentReference(ctx context.Context, referenc
 	// 4. Atomically credit the wallet + write the ledger row + mark payment done.
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		// Idempotency backstop at the ledger level: unique reference.
-		exists, terr := s.walletRepo.TransactionExists(ctx, reference)
+		exists, terr := s.walletRepo.TransactionExists(ctx, tx, reference)
 		if terr != nil {
 			return terr
 		}
@@ -213,9 +237,26 @@ func (s *walletService) CreditFromPaymentReference(ctx context.Context, referenc
 			Status:            "completed",
 			Metadata:          datatypes.JSON(rawPayload),
 		}
-		return tx.Create(ledger).Error
+		if cerr := tx.Create(ledger).Error; cerr != nil {
+			return cerr
+		}
+
+		// Phase 7: DR 1010 settlement clearing / CR 2010 user wallet — same
+		// transaction as the balance change, so money and journal never diverge.
+		return s.ledger.Deposit(ctx, tx, payment.UserID, ledger.ID, payment.AmountKobo, reference)
 	})
 	if err != nil {
+		// Duplicate-delivery race: a concurrent copy of this same webhook
+		// committed its ledger row between our idempotency check and our
+		// insert, so the UNIQUE constraint on wallet_transactions.reference
+		// rejected ours. The money is already credited exactly once — report
+		// success so the provider stops retrying, instead of answering 500 for
+		// an operation that actually succeeded.
+		if exists, xerr := s.walletRepo.TransactionExists(ctx, s.db, reference); xerr == nil && exists {
+			log.Info("webhook already credited by a concurrent delivery", "reference", reference)
+			_ = s.paymentRepo.MarkSuccess(ctx, reference, verify.Reference, datatypes.JSON(rawPayload))
+			return nil
+		}
 		log.Error("failed to credit wallet in transaction", "reference", reference, "error", err)
 		return apperrors.ErrInternalServer
 	}
@@ -223,11 +264,19 @@ func (s *walletService) CreditFromPaymentReference(ctx context.Context, referenc
 	_ = s.paymentRepo.MarkSuccess(ctx, reference, verify.Reference, datatypes.JSON(rawPayload))
 
 	// 5. Side effects (non-critical): notify the user + queue a receipt email.
+	//
+	// Both dependencies are OPTIONAL: the worker wires a nil notifier (it only
+	// reconciles) and a nil queue client (it only consumes). Calling a method on
+	// a nil interface panics — and here that would crash the process AFTER the
+	// wallet was already credited. Side effects must never be able to take down
+	// the payment path.
 	if user, uerr := s.userRepo.FindByID(ctx, payment.UserID); uerr == nil {
-		s.notifier.Notify(ctx, payment.UserID, models.NotificationDepositSuccess,
-			"Deposit successful",
-			fmt.Sprintf("Your wallet was credited with ₦%s.", formatKobo(payment.AmountKobo)),
-			map[string]any{"reference": reference, "amount_kobo": payment.AmountKobo})
+		if s.notifier != nil {
+			s.notifier.Notify(ctx, payment.UserID, models.NotificationDepositSuccess,
+				"Deposit successful",
+				fmt.Sprintf("Your wallet was credited with ₦%s.", formatKobo(payment.AmountKobo)),
+				map[string]any{"reference": reference, "amount_kobo": payment.AmountKobo})
+		}
 
 		if s.mq != nil {
 			_ = s.mq.Publish(ctx, queue.QueueDepositReceipt, queue.DepositReceiptMessage{
@@ -245,21 +294,22 @@ func (s *walletService) CreditFromPaymentReference(ctx context.Context, referenc
 // InitiateWithdrawal requests a withdrawal with production-grade locked balance handling.
 //
 // FLOW:
-//   1. Validate amount against limits
-//   2. Check for existing pending withdrawal (prevent duplicates)
-//   3. Pre-flight check: Resolve bank account (verify name matches)
-//   4. Database transaction:
-//      a. Lock wallet row (FOR UPDATE)
-//      b. Check available balance
-//      c. Lock funds (locked_balance += amount)
-//      d. Create pending WalletTransaction
-//   5. Queue withdrawal job for async processing
-//   6. Return pending status immediately
+//  1. Validate amount against limits
+//  2. Check for existing pending withdrawal (prevent duplicates)
+//  3. Pre-flight check: Resolve bank account (verify name matches)
+//  4. Database transaction:
+//     a. Lock wallet row (FOR UPDATE)
+//     b. Check available balance
+//     c. Lock funds (locked_balance += amount)
+//     d. Create pending WalletTransaction
+//  5. Queue withdrawal job for async processing
+//  6. Return pending status immediately
 //
 // LOCKED BALANCE PATTERN:
-//   Before: main=100k, locked=0, available=100k
-//   After:  main=100k, locked=50k, available=50k
-//   User cannot spend the locked ₦50k until withdrawal completes or fails.
+//
+//	Before: main=100k, locked=0, available=100k
+//	After:  main=100k, locked=50k, available=50k
+//	User cannot spend the locked ₦50k until withdrawal completes or fails.
 func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID, req dto.WithdrawRequest) (*dto.TransactionResponse, error) {
 	// Step 1: Validate amount
 	if req.Amount <= 0 {
@@ -323,10 +373,30 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 		"account_name", resolution.AccountName,
 		"bank_name", resolution.BankName)
 
-	// Step 4: Generate unique reference
+	// Phase 8.2: blocking AML rules run here — AFTER the bank resolved the
+	// account (so the KYC-name comparison has the real name) and BEFORE any
+	// money is locked. A denial files an alert explaining why and returns
+	// ErrRiskBlocked (422, code risk_blocked).
+	if s.risk != nil {
+		if rerr := s.risk.CheckWithdrawalAllowed(ctx, userID, req.Amount, resolution.AccountName); rerr != nil {
+			return nil, rerr
+		}
+	}
+
+	// Step 4: Freeze the withdrawal fee (Phase 7.4: 1% capped at ₦2,000).
+	// Computed once at initiation and stored on the transaction so a later
+	// fee-rule edit cannot change an in-flight withdrawal's maths. Refuses to
+	// proceed when no active rule exists — charging without a rule is a bug.
+	feeKobo, netKobo, ferr := s.ledger.WithdrawalFeeKobo(ctx, req.Amount)
+	if ferr != nil {
+		logger.FromContext(ctx).Error("fee engine refused withdrawal", "error", ferr)
+		return nil, apperrors.ErrInternalServer
+	}
+
+	// Step 5: Generate unique reference
 	reference := "WD-" + strings.ToUpper(uuid.NewString()[:12])
 
-	// Step 5: Database transaction - Lock funds, create pending transaction, and create outbox event
+	// Step 6: Database transaction - Lock funds, create pending transaction, and create outbox event
 	var ledger *models.WalletTransaction
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		// Lock wallet row to prevent concurrent modifications
@@ -345,10 +415,12 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 		// Note: balance_before and balance_after both show main_balance
 		// The actual debit happens when withdrawal completes
 		meta, _ := json.Marshal(map[string]any{
-			"bank_code":       req.BankCode,
-			"account_number":  req.AccountNumber,
-			"account_name":    resolution.AccountName, // Use verified name from bank
-			"bank_name":       resolution.BankName,
+			"bank_code":      req.BankCode,
+			"account_number": req.AccountNumber,
+			"account_name":   resolution.AccountName, // Use verified name from bank
+			"bank_name":      resolution.BankName,
+			"fee_kobo":       feeKobo, // frozen at initiation (Phase 7.4)
+			"net_kobo":       netKobo,
 		})
 
 		ledger = &models.WalletTransaction{
@@ -356,6 +428,8 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 			UserID:        userID,
 			Type:          "withdrawal",
 			Amount:        req.Amount,
+			FeeKobo:       feeKobo,
+			NetKobo:       netKobo,
 			BalanceBefore: wallet.MainBalance,
 			BalanceAfter:  wallet.MainBalance, // Unchanged until completion
 			Reference:     reference,
@@ -365,6 +439,13 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 		}
 		if cerr := tx.Create(ledger).Error; cerr != nil {
 			return cerr
+		}
+
+		// Phase 7: reserve the gross amount — DR 2010 user wallet / CR 2100
+		// withdrawal reserve. The fee itself is booked when the payout settles
+		// (WithdrawalPaid), because that is when the money actually leaves.
+		if lerr := s.ledger.WithdrawalReserve(ctx, tx, userID, ledger.ID, req.Amount, reference); lerr != nil {
+			return lerr
 		}
 
 		// OUTBOX PATTERN: Create outbox event in same transaction
@@ -426,10 +507,10 @@ func (s *walletService) InitiateWithdrawal(ctx context.Context, userID uuid.UUID
 			fmt.Sprintf("Your withdrawal of ₦%s to %s is being processed.",
 				formatKobo(req.Amount), resolution.BankName),
 			map[string]any{
-				"reference":        reference,
-				"amount":           req.Amount,
-				"bank_name":        resolution.BankName,
-				"account_number":   req.AccountNumber,
+				"reference":      reference,
+				"amount":         req.Amount,
+				"bank_name":      resolution.BankName,
+				"account_number": req.AccountNumber,
 			})
 	}
 
@@ -456,12 +537,141 @@ func (s *walletService) VerifyWebhookSignature(signature string, body []byte) bo
 	return s.provider.VerifyWebhookSignature(signature, body)
 }
 
+// ListBanks returns the selectable bank list. Nigerian bank codes (CBN BINs)
+// are stable, so a static list is correct and avoids a provider round-trip on
+// every withdrawal-page load.
+func (s *walletService) ListBanks() []dto.BankResponse {
+	return []dto.BankResponse{
+		{Code: "044", Name: "Access Bank"},
+		{Code: "063", Name: "Access Bank (Diamond)"},
+		{Code: "035", Name: "ALAT by Wema"},
+		{Code: "070", Name: "Fidelity Bank"},
+		{Code: "011", Name: "First Bank of Nigeria"},
+		{Code: "214", Name: "First City Monument Bank"},
+		{Code: "058", Name: "Guaranty Trust Bank"},
+		{Code: "030", Name: "Heritage Bank"},
+		{Code: "082", Name: "Keystone Bank"},
+		{Code: "090", Name: "Kuda Bank"},
+		{Code: "526", Name: "Moniepoint MFB"},
+		{Code: "076", Name: "Polaris Bank"},
+		{Code: "221", Name: "Stanbic IBTC Bank"},
+		{Code: "068", Name: "Standard Chartered Bank"},
+		{Code: "032", Name: "Union Bank of Nigeria"},
+		{Code: "033", Name: "United Bank for Africa"},
+		{Code: "215", Name: "Unity Bank"},
+		{Code: "035", Name: "Wema Bank"},
+		{Code: "057", Name: "Zenith Bank"},
+	}
+}
+
+// VerifyAccount resolves an account number against a bank to fetch the true
+// account name. This replaces the frontend's fake setTimeout verification —
+// the withdrawal API requires an account_name that matches bank records.
+func (s *walletService) VerifyAccount(ctx context.Context, req dto.VerifyAccountRequest) (*dto.VerifyAccountResponse, error) {
+	resolution, err := s.provider.ResolveAccountNumber(ctx, req.AccountNumber, req.BankCode)
+	if err != nil {
+		logger.FromContext(ctx).Warn("account resolution failed",
+			"bank_code", req.BankCode, "error", err)
+		return nil, apperrors.ErrInvalidBankAccount
+	}
+
+	return &dto.VerifyAccountResponse{
+		AccountName:   resolution.AccountName,
+		AccountNumber: req.AccountNumber,
+		BankName:      resolution.BankName,
+		BankCode:      req.BankCode,
+	}, nil
+}
+
+// TransferEarnings moves amountKobo from the earnings balance to the main
+// balance so the funds become withdrawable/investable.
+//
+// FINANCIAL SAFETY (same pattern as the debit paths):
+//   - Single DB transaction with the wallet row locked (SELECT ... FOR UPDATE)
+//   - Earnings balance can never go negative (guarded here + DB CHECK)
+//   - Exactly one ledger row (type "transfer") with main-balance before/after
+func (s *walletService) TransferEarnings(ctx context.Context, userID uuid.UUID, amountKobo int64) (*dto.WalletResponse, error) {
+	if amountKobo <= 0 {
+		return nil, apperrors.ErrInvalidAmount
+	}
+
+	var result *dto.WalletResponse
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		wallet, werr := s.walletRepo.FindByUserIDForUpdate(ctx, userID, tx)
+		if werr != nil {
+			if repositories.IsErrRecordNotFound(werr) {
+				return apperrors.ErrWalletNotFound
+			}
+			return werr
+		}
+
+		if wallet.EarningsBalance < amountKobo {
+			return apperrors.ErrInsufficientEarnings
+		}
+
+		before := wallet.MainBalance
+		afterMain := before + amountKobo
+		afterEarnings := wallet.EarningsBalance - amountKobo
+
+		if uerr := s.walletRepo.UpdateBalance(ctx, tx, wallet.ID, afterMain, afterEarnings); uerr != nil {
+			return uerr
+		}
+
+		ledger := &models.WalletTransaction{
+			WalletID:      wallet.ID,
+			UserID:        userID,
+			Type:          "transfer",
+			Amount:        amountKobo,
+			BalanceBefore: before,
+			BalanceAfter:  afterMain,
+			Reference:     "TRF-" + strings.ToUpper(uuid.NewString()[:12]),
+			Description:   "Transfer from earnings to main wallet",
+			Status:        "completed",
+		}
+		if cerr := s.walletRepo.CreateTransaction(ctx, tx, ledger); cerr != nil {
+			return cerr
+		}
+
+		// Phase 7: DR 2020 earnings payable / CR 2010 user wallet.
+		if lerr := s.ledger.EarningsToMain(ctx, tx, userID, ledger.ID, amountKobo, ledger.Reference); lerr != nil {
+			return lerr
+		}
+
+		wallet.MainBalance = afterMain
+		wallet.EarningsBalance = afterEarnings
+		result = walletToResponse(wallet)
+		return nil
+	})
+
+	if err != nil {
+		if errors.Is(err, apperrors.ErrInsufficientEarnings) || errors.Is(err, apperrors.ErrInvalidAmount) {
+			return nil, err
+		}
+		logger.FromContext(ctx).Error("earnings transfer failed", "user_id", userID, "error", err)
+		return nil, apperrors.ErrInternalServer
+	}
+
+	logger.FromContext(ctx).Info("earnings transferred",
+		"user_id", userID, "amount_kobo", amountKobo)
+
+	if s.notifier != nil {
+		s.notifier.Notify(ctx, userID, models.NotificationWalletUpdate,
+			"Earnings transferred",
+			fmt.Sprintf("₦%s moved from earnings to your main wallet.", formatKobo(amountKobo)),
+			map[string]any{"amount_kobo": amountKobo})
+	}
+
+	return result, nil
+}
+
 // FinalizeWithdrawal completes or reverses a pending withdrawal based on transfer status.
 // Called by: Worker (after InitiateTransfer) and Webhook (on transfer status update).
 //
 // FLOW:
-//   SUCCESS: Release locked funds, permanently debit wallet, mark transaction completed
-//   FAILED:  Release locked funds, restore to available balance, mark transaction failed
+//
+//	SUCCESS: Release locked funds, permanently debit wallet, mark transaction completed
+//	FAILED:  Release locked funds, restore to available balance, mark transaction failed
 //
 // IDEMPOTENCY: Safe to call multiple times (checks transaction status first)
 func (s *walletService) FinalizeWithdrawal(ctx context.Context, transactionID uuid.UUID, success bool, providerReference, failureReason string) error {
@@ -513,14 +723,25 @@ func (s *walletService) FinalizeWithdrawal(ctx context.Context, transactionID uu
 				return err
 			}
 
-			// Update transaction status
+			// Update transaction status.
+			// NOTE: wallet_transactions has no updated_at column (the ledger is
+			// append-only; only created_at exists) — writing one here made this
+			// UPDATE fail, which rolled back the whole finalization and left
+			// withdrawals stuck in `pending` forever.
 			if err := tx.Model(&models.WalletTransaction{}).
 				Where("id = ?", transactionID).
 				Updates(map[string]interface{}{
 					"status":             "completed",
 					"external_reference": providerReference,
-					"updated_at":         time.Now(),
 				}).Error; err != nil {
+				return err
+			}
+
+			// Phase 7: the money left custody — DR 2100 reserve (gross),
+			// CR 1010 clearing (net), CR 3000 fee revenue (our cut).
+			if err := s.ledger.WithdrawalPaid(ctx, tx, txn.UserID, txn.ID,
+				txn.Amount, txn.FeeKobo, txn.Reference); err != nil {
+				log.Error("failed to post withdrawal journal", "error", err)
 				return err
 			}
 
@@ -537,10 +758,9 @@ func (s *walletService) FinalizeWithdrawal(ctx context.Context, transactionID uu
 				return err
 			}
 
-			// Update transaction status
+			// Update transaction status (no updated_at — see note above).
 			updates := map[string]interface{}{
-				"status":     "failed",
-				"updated_at": time.Now(),
+				"status": "failed",
 			}
 			if providerReference != "" {
 				updates["external_reference"] = providerReference
@@ -561,6 +781,14 @@ func (s *walletService) FinalizeWithdrawal(ctx context.Context, transactionID uu
 			if err := tx.Model(&models.WalletTransaction{}).
 				Where("id = ?", transactionID).
 				Updates(updates).Error; err != nil {
+				return err
+			}
+
+			// Phase 7: the reserve returns to the wallet — DR 2100 reserve /
+			// CR 2010 user wallet. No fee is charged: the money never left.
+			if err := s.ledger.WithdrawalReleased(ctx, tx, txn.UserID, txn.ID,
+				txn.Amount, txn.Reference); err != nil {
+				log.Error("failed to post withdrawal release journal", "error", err)
 				return err
 			}
 
@@ -593,13 +821,18 @@ func (s *walletService) FinalizeWithdrawal(ctx context.Context, transactionID uu
 		notifType = models.NotificationWithdrawalUpdate
 	}
 
-	s.notifier.Notify(ctx, txn.UserID, notifType, notifTitle, notifMessage,
-		map[string]any{
-			"transaction_id": transactionID,
-			"reference":      txn.Reference,
-			"amount":         txn.Amount,
-			"status":         statusText,
-		})
+	// The worker constructs its notifier with a hub-less notification service,
+	// but anything wiring a nil one must not take the process down: a panic here
+	// would kill every dispatcher in the worker mid-flight.
+	if s.notifier != nil {
+		s.notifier.Notify(ctx, txn.UserID, notifType, notifTitle, notifMessage,
+			map[string]any{
+				"transaction_id": transactionID,
+				"reference":      txn.Reference,
+				"amount":         txn.Amount,
+				"status":         statusText,
+			})
+	}
 
 	log.Info("withdrawal finalized",
 		"transaction_id", transactionID,
@@ -617,14 +850,14 @@ func (s *walletService) GetWithdrawalByReference(ctx context.Context, reference 
 		Where("reference = ? AND type = ?", reference, "withdrawal").
 		Select("id").
 		First(&txn).Error
-	
+
 	if err != nil {
 		if repositories.IsErrRecordNotFound(err) {
 			return uuid.Nil, fmt.Errorf("withdrawal transaction not found for reference: %s", reference)
 		}
 		return uuid.Nil, apperrors.ErrInternalServer
 	}
-	
+
 	return txn.ID, nil
 }
 
@@ -685,9 +918,9 @@ func formatKobo(kobo int64) string {
 //   - "O'BRIEN MARY" vs "Mary O'Brien"
 //
 // ALGORITHM:
-//   1. Convert both to uppercase (case-insensitive)
-//   2. Remove all non-alphanumeric characters (spaces, dots, commas, apostrophes)
-//   3. Compare resulting strings
+//  1. Convert both to uppercase (case-insensitive)
+//  2. Remove all non-alphanumeric characters (spaces, dots, commas, apostrophes)
+//  3. Compare resulting strings
 //
 // This prevents false rejections due to formatting differences while still catching
 // genuine mismatches (wrong account entered).

@@ -1,7 +1,10 @@
 # =========================
 # Stage 1: Build
 # =========================
-FROM golang:1.25-alpine AS builder
+# Must satisfy go.mod's `go 1.26.0` directive — GOTOOLCHAIN=local in the
+# image means an older tag fails at `go mod download` instead of fetching a
+# newer toolchain (caught by the Phase 3.4 staging build).
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 

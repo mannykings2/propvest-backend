@@ -1,6 +1,17 @@
 .git
 .github
 
+# Build output and live logs — appending logs broke the build context
+# (archive/tar: write too long) and bin/ added 130MB for nothing.
+bin
+*.log
+coverage
+middleware_coverage
+internal/middleware/coverage
+backups
+$env
+*.exe~
+
 .kilo
 .kiro
 

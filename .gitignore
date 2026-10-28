@@ -4,3 +4,20 @@
 bin/
 tmp/
 *.exe
+
+# Local run artifacts (API/worker logs, coverage output) — never commit
+*_run.log
+*_mock.log
+coverage
+middleware_coverage
+internal/middleware/coverage
+backups/
+
+# Windows reserved device name
+NUL
+
+# Runtime artifacts — never commit
+*.pid
+*_stdout.log
+*_stderr.log
+$env

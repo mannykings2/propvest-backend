@@ -27,29 +27,32 @@ var (
 	// ───────────────────────────────────────────────────────────────────
 	// AUTHENTICATION ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrInvalidCredentials   = errors.New("invalid email or password")
-	ErrEmailAlreadyExists   = errors.New("email already registered")
-	ErrEmailTaken           = errors.New("email already registered") // Alias for backward compatibility
-	ErrPhoneTaken           = errors.New("phone number already registered")
-	ErrInvalidToken         = errors.New("invalid or expired token")
-	ErrTokenExpired         = errors.New("token has expired")
-	ErrUnauthorized         = errors.New("unauthorized")
-	ErrEmailNotVerified     = errors.New("email not verified")
-	ErrAccountSuspended     = errors.New("account has been suspended")
-	ErrWeakPassword         = errors.New("password does not meet complexity requirements: minimum 12 characters, at least 1 uppercase, 1 lowercase, 1 digit, and 1 special character")
-	ErrPasswordTooLong      = errors.New("password exceeds maximum length of 72 characters")
-	ErrInvalidPhoneFormat   = errors.New("phone number must be in E.164 format: +234XXXXXXXXXX")
+	ErrInvalidCredentials = errors.New("invalid email or password")
+	ErrEmailAlreadyExists = errors.New("email already registered")
+	ErrEmailTaken         = errors.New("email already registered") // Alias for backward compatibility
+	ErrPhoneTaken         = errors.New("phone number already registered")
+	// ErrPhoneAlreadyExists must be the SAME value as ErrPhoneTaken: two
+	// separate errors.New() values made errors.Is() fail, so a duplicate phone
+	// number fell through the handler's mapping and answered 500 instead of 409.
+	ErrPhoneAlreadyExists = ErrPhoneTaken
+	ErrInvalidToken       = errors.New("invalid or expired token")
+	ErrTokenExpired       = errors.New("token has expired")
+	ErrUnauthorized       = errors.New("unauthorized")
+	ErrEmailNotVerified   = errors.New("email not verified")
+	ErrAccountSuspended   = errors.New("account has been suspended")
+	ErrWeakPassword       = errors.New("password does not meet complexity requirements: minimum 12 characters, at least 1 uppercase, 1 lowercase, 1 digit, and 1 special character")
+	ErrPasswordTooLong    = errors.New("password exceeds maximum length of 72 characters")
+	ErrInvalidPhoneFormat = errors.New("phone number must be in E.164 format: +234XXXXXXXXXX")
 
 	// ───────────────────────────────────────────────────────────────────
 	// USER ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrUserNotFound   = errors.New("user not found")
-	ErrUserExists     = errors.New("user already exists")
-	ErrInvalidUserID  = errors.New("invalid user ID")
-	ErrPasswordWeak   = errors.New("password does not meet security requirements")
-	ErrPasswordWrong  = errors.New("current password is incorrect")
-	ErrSamePassword   = errors.New("new password cannot be the same as current password")
-	ErrPhoneAlreadyExists = errors.New("phone number already registered")
+	ErrUserNotFound       = errors.New("user not found")
+	ErrUserExists         = errors.New("user already exists")
+	ErrInvalidUserID      = errors.New("invalid user ID")
+	ErrPasswordWeak       = errors.New("password does not meet security requirements")
+	ErrPasswordWrong      = errors.New("current password is incorrect")
+	ErrSamePassword       = errors.New("new password cannot be the same as current password")
 	ErrInvalidImageFormat = errors.New("invalid image format: only jpg, jpeg, png, gif, webp allowed")
 	ErrImageTooLarge      = errors.New("image file too large: maximum 5MB for avatars, 10MB for properties")
 	ErrImageUploadFailed  = errors.New("failed to upload image")
@@ -68,41 +71,58 @@ var (
 	// ───────────────────────────────────────────────────────────────────
 	// WALLET ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrWalletNotFound      = errors.New("wallet not found")
-	ErrInsufficientFunds   = errors.New("insufficient wallet balance")
-	ErrInvalidAmount       = errors.New("invalid amount")
-	ErrNegativeBalance     = errors.New("balance cannot be negative")
-	ErrDuplicateReference  = errors.New("transaction with this reference already exists")
-	ErrMinimumDeposit      = errors.New("amount is below minimum deposit")
-	ErrMaximumDeposit      = errors.New("amount exceeds maximum deposit")
-	ErrMinimumWithdrawal   = errors.New("amount is below minimum withdrawal")
-	ErrMaximumWithdrawal   = errors.New("amount exceeds maximum withdrawal")
-	ErrInvalidBankAccount  = errors.New("invalid bank account details")
-	ErrAccountNameMismatch = errors.New("account name does not match bank records")
-	ErrBankAccountNotFound = errors.New("bank account not found")
-	ErrInvalidBankCode     = errors.New("invalid bank code")
-	ErrWithdrawalPending   = errors.New("you have a pending withdrawal, please wait for it to complete")
-	ErrWithdrawalFailed    = errors.New("withdrawal processing failed")
+	ErrWalletNotFound       = errors.New("wallet not found")
+	ErrInsufficientFunds    = errors.New("insufficient wallet balance")
+	ErrInvalidAmount        = errors.New("invalid amount")
+	ErrNegativeBalance      = errors.New("balance cannot be negative")
+	ErrDuplicateReference   = errors.New("transaction with this reference already exists")
+	ErrMinimumDeposit       = errors.New("amount is below minimum deposit")
+	ErrMaximumDeposit       = errors.New("amount exceeds maximum deposit")
+	ErrMinimumWithdrawal    = errors.New("amount is below minimum withdrawal")
+	ErrMaximumWithdrawal    = errors.New("amount exceeds maximum withdrawal")
+	ErrInvalidBankAccount   = errors.New("invalid bank account details")
+	ErrAccountNameMismatch  = errors.New("account name does not match bank records")
+	ErrBankAccountNotFound  = errors.New("bank account not found")
+	ErrInvalidBankCode      = errors.New("invalid bank code")
+	ErrWithdrawalPending    = errors.New("you have a pending withdrawal, please wait for it to complete")
+	ErrWithdrawalFailed     = errors.New("withdrawal processing failed")
+	ErrInsufficientEarnings = errors.New("insufficient earnings balance")
 
 	// ───────────────────────────────────────────────────────────────────
 	// PROPERTY ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrPropertyNotFound    = errors.New("property not found")
-	ErrPropertyClosed      = errors.New("property is no longer accepting investments")
-	ErrPropertyNotApproved = errors.New("property has not been approved")
-	ErrPropertyFullyFunded = errors.New("property is fully funded")
-	ErrInvalidPropertyID   = errors.New("invalid property ID")
+	ErrPropertyNotFound     = errors.New("property not found")
+	ErrPropertyClosed       = errors.New("property is no longer accepting investments")
+	ErrPropertyNotApproved  = errors.New("property has not been approved")
+	ErrPropertyFullyFunded  = errors.New("property is fully funded")
+	ErrInvalidPropertyID    = errors.New("invalid property ID")
 	ErrUnauthorizedProperty = errors.New("you do not have permission to modify this property")
 
 	// ───────────────────────────────────────────────────────────────────
 	// INVESTMENT ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrInvestmentNotFound   = errors.New("investment not found")
-	ErrInvestmentTooSmall   = errors.New("investment amount is below minimum")
-	ErrInvestmentTooLarge   = errors.New("investment amount exceeds maximum")
-	ErrInvestmentExceeds    = errors.New("investment would exceed property funding goal")
-	ErrAlreadyInvested      = errors.New("you have already invested in this property")
-	ErrKYCRequired          = errors.New("KYC verification required to invest")
+	ErrInvestmentNotFound = errors.New("investment not found")
+	ErrInvestmentTooSmall = errors.New("investment amount is below minimum")
+	ErrInvestmentTooLarge = errors.New("investment amount exceeds maximum")
+	ErrInvestmentExceeds  = errors.New("investment would exceed property funding goal")
+	ErrAlreadyInvested    = errors.New("you have already invested in this property")
+	ErrKYCRequired        = errors.New("KYC verification required to invest")
+
+	// ───────────────────────────────────────────────────────────────────
+	// SALE VOTE (governance) ERRORS
+	// ───────────────────────────────────────────────────────────────────
+	ErrSaleVoteNotEligible = errors.New("hold period has not elapsed for this investment")
+	ErrSaleVoteAlreadyOpen = errors.New("a sale vote is already open for this property")
+	ErrAlreadyVoted        = errors.New("you have already voted in this sale campaign")
+	ErrSaleVoteNotOpen     = errors.New("no open sale vote for this investment")
+	ErrNotInvestor         = errors.New("only investors in this property can vote")
+
+	// SUPPORT TICKET ERRORS (Phase 4.2)
+	// ───────────────────────────────────────────────────────────────────
+	// ErrTicketNotFound doubles as the ownership miss: another user's ticket
+	// comes back "not found", so probing IDs reveals nothing.
+	ErrTicketNotFound = errors.New("support ticket not found")
+	ErrTicketClosed   = errors.New("this ticket is closed; open a new one to continue")
 
 	// ───────────────────────────────────────────────────────────────────
 	// VALIDATION ERRORS
@@ -118,10 +138,10 @@ var (
 	// ───────────────────────────────────────────────────────────────────
 	// PERMISSION ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrForbidden         = errors.New("forbidden")
-	ErrInsufficientRole  = errors.New("insufficient role permissions")
-	ErrAdminOnly         = errors.New("this action requires administrator privileges")
-	ErrDeveloperOnly     = errors.New("this action requires developer role")
+	ErrForbidden        = errors.New("forbidden")
+	ErrInsufficientRole = errors.New("insufficient role permissions")
+	ErrAdminOnly        = errors.New("this action requires administrator privileges")
+	ErrDeveloperOnly    = errors.New("this action requires developer role")
 
 	// ───────────────────────────────────────────────────────────────────
 	// RATE LIMITING ERRORS
@@ -143,19 +163,43 @@ var (
 	// ───────────────────────────────────────────────────────────────────
 	// PAYMENT PROVIDER ERRORS
 	// ───────────────────────────────────────────────────────────────────
-	ErrPaymentProviderUnavailable = errors.New("payment provider is temporarily unavailable")
-	ErrPaymentVerificationFailed  = errors.New("payment verification failed")
-	ErrTransferFailed             = errors.New("transfer to bank account failed")
+	ErrPaymentProviderUnavailable  = errors.New("payment provider is temporarily unavailable")
+	ErrPaymentVerificationFailed   = errors.New("payment verification failed")
+	ErrTransferFailed              = errors.New("transfer to bank account failed")
 	ErrInsufficientProviderBalance = errors.New("insufficient balance in payment provider account")
+
+	// ───────────────────────────────────────────────────────────────────
+	// KYC REVIEW WORKFLOW ERRORS (Phase 6.2 / 6.3)
+	// ───────────────────────────────────────────────────────────────────
+	// The three below map to HTTP 422 in the admin handler: they are policy
+	// refusals, not malformed requests.
+	ErrKYCReasonRequired    = errors.New("a reason is required for every KYC decision")
+	ErrKYCScreeningRequired = errors.New("approval requires a recorded sanctions/PEP screening check marked 'clear'")
+	ErrKYCScreeningHit      = errors.New("screening recorded a hit: approval is blocked, reject or escalate instead")
+
+	// ───────────────────────────────────────────────────────────────────
+	// RISK / AML ERRORS (Phase 8.2)
+	// ───────────────────────────────────────────────────────────────────
+	// A blocking risk rule refused the withdrawal (velocity, new-account
+	// high value, or a flagged account). Maps to 422 with code
+	// 'risk_blocked'; the WHY lives in the admin risk-alert queue, not the
+	// user-facing message (rule thresholds are not user information).
+	ErrRiskBlocked = errors.New("this withdrawal can not be processed now — please contact support")
+
+	// TOKEN (password reset / email verification) ERRORS
+	// ───────────────────────────────────────────────────────────────────
+	ErrTokenInvalid = errors.New("invalid or expired token")
+	ErrTokenUsed    = errors.New("this token has already been used")
 )
 
 // AppError wraps an error with additional context.
 // This allows errors to carry more information as they bubble up.
 //
 // Example:
-//   if err := db.Create(&user).Error; err != nil {
-//       return WrapError(err, "failed to create user", "user_creation")
-//   }
+//
+//	if err := db.Create(&user).Error; err != nil {
+//	    return WrapError(err, "failed to create user", "user_creation")
+//	}
 type AppError struct {
 	Err      error  // The underlying error
 	Message  string // Human-readable context

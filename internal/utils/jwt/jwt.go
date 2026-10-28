@@ -85,6 +85,13 @@ func GenerateAccessToken(userID uuid.UUID, role string, secret string, ttl time.
 			// Subject is typically the user identifier as a string
 			Subject: userID.String(),
 
+			// ID (the "jti" claim) makes every token unique. Without it, two
+			// tokens minted for the same user in the same second are byte-
+			// identical (iat/exp only have second resolution), which breaks
+			// refresh-token rotation: the new refresh token would hash to the
+			// same value as the stored one and collide on the unique index.
+			ID: uuid.NewString(),
+
 			// ExpiresAt tells when the token becomes invalid
 			// NewNumericDate converts time.Time to JWT's numeric date format (Unix timestamp)
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
@@ -140,6 +147,9 @@ func GenerateRefreshToken(userID uuid.UUID, role string, secret string, ttl time
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "propvest-api",
+
+			// Unique per token — required for safe rotation (see GenerateAccessToken).
+			ID: uuid.NewString(),
 		},
 	}
 

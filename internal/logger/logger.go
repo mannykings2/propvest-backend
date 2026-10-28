@@ -30,6 +30,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // log is the process-wide structured logger. It is set by Init and defaults to
@@ -55,7 +57,10 @@ func Init(appEnv string) {
 		level = slog.LevelInfo
 	}
 
-	opts := &slog.HandlerOptions{Level: level}
+	opts := &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: replaceAttr,
+	}
 
 	var handler slog.Handler
 	if strings.EqualFold(appEnv, "production") {
@@ -70,6 +75,95 @@ func Init(appEnv string) {
 	// Also route the standard library's global slog default to the same handler
 	// so any stray slog.Info calls elsewhere are consistent.
 	slog.SetDefault(log)
+}
+
+// redactedPlaceholder replaces the VALUE of any attribute whose key looks
+// sensitive. The key is kept so log aggregators can still count/alert on it.
+const redactedPlaceholder = "[REDACTED]"
+
+// sensitiveKeySegments mark a key as sensitive when any SEPARATED/CAMEL-CASE
+// segment equals one of these (lowercased). Segment matching — not substring —
+// so "assigned_tokenless_count" passes while "refresh_token" is wiped.
+var sensitiveKeySegments = map[string]bool{
+	"password": true, "passwd": true, "secret": true, "token": true,
+	"authorization": true, "cookie": true, "credential": true,
+	"otp": true, "bvn": true, "nin": true, "pin": true, "cvv": true,
+}
+
+// sensitiveComposites catches compounds built from non-sensitive parts:
+// api_key / apiKey / x-api-key and privateKey.
+var sensitiveComposites = []string{"apikey", "privatekey"}
+
+// keySegments splits a key on '_', '-', '.', ' ' and camelCase boundaries and
+// lowercases each part: "PAYSTACK_SECRET_KEY" → [paystack secret key],
+// "accessToken" → [access token], "api" "key" stays two segments.
+func keySegments(key string) []string {
+	var segs []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			segs = append(segs, strings.ToLower(cur.String()))
+			cur.Reset()
+		}
+	}
+	for _, r := range key {
+		switch {
+		case r == '_' || r == '-' || r == '.' || r == ' ':
+			flush()
+		case unicode.IsUpper(r):
+			// camelCase boundary: only split mid-word ("HTTPServer" stays one
+			// segment for its caps run, "accessToken" splits at the T).
+			if cur.Len() > 0 {
+				last, _ := utf8.DecodeLastRuneInString(cur.String())
+				if unicode.IsLower(last) || unicode.IsDigit(last) {
+					flush()
+				}
+			}
+			cur.WriteRune(r)
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return segs
+}
+
+func isSensitiveKey(key string) bool {
+	// Separator-free lowercase form for composites (apiKey → apikey).
+	flat := strings.ToLower(strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '-', '.', ' ':
+			return -1
+		}
+		return r
+	}, key))
+	for _, comp := range sensitiveComposites {
+		if strings.Contains(flat, comp) {
+			return true
+		}
+	}
+	for _, seg := range keySegments(key) {
+		if sensitiveKeySegments[seg] {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceAttr is wired into every handler built by Init (Phase 3.3 log
+// redaction). It is a defence in depth: today no call site passes a raw
+// password/token to the logger (audited), but one careless logger.Error(...,
+// "password", pw) during an incident would otherwise ship credentials to the
+// log store — and log stores outlive the sessions they leak. Values of
+// sensitive keys are replaced; everything else passes through untouched.
+func replaceAttr(groups []string, a slog.Attr) slog.Attr {
+	// groups is intentionally unused: keys inside slog.Group(...) values are
+	// still passed here with their own key, so the check holds at any depth.
+	_ = groups
+	if isSensitiveKey(a.Key) {
+		return slog.String(a.Key, redactedPlaceholder)
+	}
+	return a
 }
 
 // L returns the global logger. Prefer the package-level helpers (Info/Error/…)

@@ -45,14 +45,14 @@ func NewMockSMSService() SMSService {
 // Then you use "123456" to verify the phone number
 func (s *MockSMSService) SendOTP(ctx context.Context, phone, code string) error {
 	// Log the OTP code so developer can see it
-	log.Printf("[SMS] Sending OTP to %s: %s", phone, code)
-	log.Printf("[SMS] Message: Your PropVest verification code is: %s. Valid for 10 minutes.", code)
+	log.Printf("[SMS][MOCK] NOT SENT — SMS is out of launch scope; OTP logged only: to=%s code=%s", phone, code)
+	log.Printf("[SMS][MOCK] Message: Your PropVest verification code is: %s. Valid for 10 minutes.", code)
 	return nil
 }
 
 // SendNotification logs the notification instead of sending real SMS
 func (s *MockSMSService) SendNotification(ctx context.Context, phone, message string) error {
-	log.Printf("[SMS] Sending notification to %s: %s", phone, message)
+	log.Printf("[SMS][MOCK] NOT SENT — SMS is out of launch scope: to=%s message=%s", phone, message)
 	return nil
 }
 
@@ -177,10 +177,17 @@ func NewSMSService(cfg *config.Config) SMSService {
 		return NewTwilioSMSService(cfg)
 	case "termii":
 		return NewTermiiSMSService(cfg)
+	case "africastalking":
+		// The provider SDK is not implemented yet (launch scope: no SMS).
+		log.Printf("[SMS] WARNING: SMS_PROVIDER=africastalking has no implementation; using mock — messages will NOT be sent")
+		return NewMockSMSService()
 	case "mock":
 		fallthrough
 	default:
 		// Default to mock for development
+		if cfg.SMSProvider != "mock" && cfg.SMSProvider != "" {
+			log.Printf("[SMS] WARNING: unknown SMS_PROVIDER=%q has no implementation; using mock — messages will NOT be sent", cfg.SMSProvider)
+		}
 		return NewMockSMSService()
 	}
 }

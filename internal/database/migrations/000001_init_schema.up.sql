@@ -77,45 +77,14 @@ CREATE INDEX IF NOT EXISTS idx_wallet_transactions_reference ON wallet_transacti
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_type ON wallet_transactions(type);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_created_at ON wallet_transactions(created_at DESC);
 
--- ───────────────────────────────────────────────────────────────────────────
--- PROPERTIES TABLE
--- ───────────────────────────────────────────────────────────────────────────
--- Investment opportunities listed on the platform
-CREATE TABLE IF NOT EXISTS properties (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    prop_code VARCHAR(255) UNIQUE NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    location VARCHAR(255) NOT NULL,
-    state VARCHAR(100) NOT NULL,
-    type VARCHAR(50) NOT NULL,
-    income_type VARCHAR(50) NOT NULL,
-    spv_name VARCHAR(255) NOT NULL,
-    spv_cac_no VARCHAR(100),
-    total_slots INTEGER NOT NULL CHECK (total_slots > 0),
-    slot_price BIGINT NOT NULL CHECK (slot_price > 0),
-    total_value BIGINT NOT NULL CHECK (total_value > 0),
-    purchase_price BIGINT NOT NULL CHECK (purchase_price > 0),
-    yield_pct NUMERIC(5,2),
-    annual_rent BIGINT,
-    monthly_rent BIGINT,
-    funded_pct INTEGER NOT NULL DEFAULT 0 CHECK (funded_pct >= 0 AND funded_pct <= 100),
-    slots_sold INTEGER NOT NULL DEFAULT 0 CHECK (slots_sold >= 0),
-    hold_years INTEGER NOT NULL DEFAULT 3 CHECK (hold_years > 0),
-    status VARCHAR(50) NOT NULL DEFAULT 'draft',
-    developer_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    description TEXT,
-    tag VARCHAR(100),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMP WITH TIME ZONE
-);
-
--- Indexes for properties table
-CREATE INDEX IF NOT EXISTS idx_properties_status ON properties(status);
-CREATE INDEX IF NOT EXISTS idx_properties_location ON properties(location);
-CREATE INDEX IF NOT EXISTS idx_properties_state ON properties(state);
-CREATE INDEX IF NOT EXISTS idx_properties_developer_id ON properties(developer_id);
-CREATE INDEX IF NOT EXISTS idx_properties_deleted_at ON properties(deleted_at);
+-- NOTE: The properties table is intentionally NOT created in this migration.
+-- It is owned by migration 000010_add_investments (the earliest point at which
+-- a foreign key REFERENCES properties(id)), which defines the canonical schema
+-- used by the GORM model and all repositories (title/slug/target_amount/...).
+-- An earlier version of this migration created a conflicting legacy `properties`
+-- table (prop_code/slot_price/...); because CREATE TABLE IF NOT EXISTS no-ops on
+-- a name collision, it silently shadowed the canonical table and aborted the
+-- chain. It is removed here so 000010 owns the table.
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- UPDATED_AT TRIGGER FUNCTION
@@ -140,11 +109,6 @@ CREATE TRIGGER update_wallets_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
-CREATE TRIGGER update_properties_updated_at
-    BEFORE UPDATE ON properties
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
 -- ═══════════════════════════════════════════════════════════════════════════
 -- COMMENTS (Documentation in the database)
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -152,12 +116,9 @@ CREATE TRIGGER update_properties_updated_at
 COMMENT ON TABLE users IS 'All authenticated accounts (investors, developers, admins)';
 COMMENT ON TABLE wallets IS 'Financial accounts - one per user';
 COMMENT ON TABLE wallet_transactions IS 'Immutable financial ledger - NEVER update or delete rows';
-COMMENT ON TABLE properties IS 'Real estate investment opportunities';
-
 COMMENT ON COLUMN wallets.main_balance IS 'Spendable balance in kobo';
 COMMENT ON COLUMN wallets.earnings_balance IS 'Investment returns in kobo';
 COMMENT ON COLUMN wallet_transactions.reference IS 'Unique transaction identifier for idempotency';
-COMMENT ON COLUMN properties.slot_price IS 'Price per investment slot in kobo';
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- END OF MIGRATION

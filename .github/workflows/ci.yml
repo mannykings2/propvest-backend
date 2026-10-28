@@ -1,0 +1,138 @@
+name: CI
+
+# Production-readiness gate (P0-0.6): every push and PR must build, vet clean
+# and pass the unit suite; the integration suite runs against a real Postgres.
+# A red build blocks the merge — nothing here uses continue-on-error.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  backend:
+    name: Build, vet & unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        # CGO is required: the repository tests use mattn/go-sqlite3.
+        run: go test ./internal/... ./tools/... -race -count=1
+        env:
+          CGO_ENABLED: 1
+
+  migrations:
+    name: Fresh-DB migration check
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: propvest_migrate
+          POSTGRES_PASSWORD: migrate_password
+          POSTGRES_DB: propvest_migrate
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install golang-migrate
+        run: go install github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+        env:
+          CGO_ENABLED: 0
+
+      # Applies the whole migration chain to an EMPTY database — the same path a
+      # staging/production deploy takes. Catches broken SQL, bad sequencing, and
+      # drift between already-applied migrations and new commits, before merge.
+      - name: Run migrations against a fresh database
+        run: |
+          migrate -path internal/database/migrations \
+            -database "postgres://propvest_migrate:migrate_password@localhost:5434/propvest_migrate?sslmode=disable" \
+            up
+
+      - name: Verify version matches the newest migration
+        run: |
+          VERSION=$(migrate -path internal/database/migrations \
+            -database "postgres://propvest_migrate:migrate_password@localhost:5434/propvest_migrate?sslmode=disable" \
+            version)
+          NEWEST=$(ls internal/database/migrations/*.up.sql | sed -E 's|.*/([0-9]+)_.*|\1|' | sort | tail -1)
+          echo "schema_migrations=$VERSION newest_file=$NEWEST"
+          test "$VERSION" = "$NEWEST"
+
+  integration:
+    name: Integration tests (Postgres)
+    runs-on: ubuntu-latest
+    needs: backend
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: propvest_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: propvest_test
+        # Port 5433 matches DATABASE_URL in .env.test.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # tests/integration/helpers.go loads .env.test itself (DATABASE_URL on
+      # port 5433, matching the service above) and runs the migrations, so no
+      # separate migrate step is needed — the tests exercise the same path the
+      # server does at boot.
+      - name: Run integration tests
+        run: go test ./tests/integration/... -race -count=1 -v
+        env:
+          CGO_ENABLED: 1
+          APP_ENV: test
+          JWT_SECRET: ci_jwt_secret_key_for_integration_tests
+          JWT_REFRESH_SECRET: ci_jwt_refresh_secret_key_for_integration_tests

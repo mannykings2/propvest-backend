@@ -16,6 +16,7 @@ import (
 	"github.com/mannykings2/propvest-backend/internal/database"
 	"github.com/mannykings2/propvest-backend/internal/dispatcher"
 	"github.com/mannykings2/propvest-backend/internal/logger"
+	"github.com/mannykings2/propvest-backend/internal/mailer"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/payments"
 	"github.com/mannykings2/propvest-backend/internal/queue"
@@ -97,6 +98,12 @@ func main() {
 		"env", cfg.AppEnv,
 		"payment_provider", cfg.PaymentProvider)
 
+	// Heartbeat file for the container healthcheck (see docker-compose.yml).
+	// Started before any dependency so a container that boots is immediately
+	// observable as alive.
+	stopHeartbeat := startHeartbeat(ctx)
+	defer stopHeartbeat()
+
 	// ═══════════════════════════════════════════════════════════════════════
 	// STEP 3: Connect to Database
 	// ═══════════════════════════════════════════════════════════════════════
@@ -135,23 +142,11 @@ func main() {
 	log.Info("✓ repositories initialized")
 
 	// ═══════════════════════════════════════════════════════════════════════
-	// STEP 6: Initialize Services
+	// STEP 6: Initialize service dependencies
 	// ═══════════════════════════════════════════════════════════════════════
-	// Note: We pass nil for notifier and queue client since worker doesn't need them
-	// for processing withdrawals (notifications are sent by the service itself)
-	walletService := services.NewWalletService(
-		walletRepo,
-		userRepo,
-		paymentRepo,
-		outboxRepo,
-		provider,
-		nil, // notifier - not needed in worker
-		nil, // mq - worker doesn't publish, only consumes
-		cfg,
-		db,
-	)
-
-	log.Info("✓ services initialized")
+	// The notifier itself is constructed BELOW, once the queue is up, so this
+	// step only prepares its repository.
+	notificationRepo := repositories.NewNotificationRepository(db)
 
 	// ═══════════════════════════════════════════════════════════════════════
 	// STEP 7: Connect to Message Queue
@@ -166,6 +161,58 @@ func main() {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════
+	// STEP 7.1: Initialize wallet service WITH a real notifier
+	// ═══════════════════════════════════════════════════════════════════════
+	// The worker is the process that finalises reconciled withdrawals and
+	// credits reconciled deposits — exactly the moments a user most needs a
+	// notification. It used to be wired a nil notifier, which (a) meant those
+	// notifications never existed and (b) PANICKED the whole worker the first
+	// time it finalised a transfer, taking every dispatcher down with it.
+	//
+	// hub=nil is deliberate: the worker owns no WebSocket connections, so the
+	// realtime push goes out over QueueRealtimePush for the API process to relay.
+	notifier := services.NewNotificationService(notificationRepo, nil, mqClient)
+
+	// Phase 7 (Money layer): the worker posts journals too (it finalises
+	// withdrawals and reconciles deposits), so it needs the same seeded ledger.
+	ledgerService := services.NewLedgerService(db)
+	if err := ledgerService.EnsureChartOfAccounts(context.Background()); err != nil {
+		log.Error("failed to seed chart of accounts", "error", err)
+		os.Exit(1)
+	}
+	if err := services.EnsureFeeRules(context.Background(), db); err != nil {
+		log.Error("failed to seed fee rules", "error", err)
+		os.Exit(1)
+	}
+
+	// Phase 8 (Risk layer): AML rule engine. Needs the audit trail for its
+	// triage writes; the scan worker below runs monitoring rules + the CTR
+	// daily scan on a ticker.
+	riskRepo := repositories.NewRiskRepository(db)
+	riskService := services.NewRiskService(riskRepo, userRepo,
+		services.NewAuditService(repositories.NewAuditRepository(db)), db)
+	if err := riskService.EnsureRules(context.Background()); err != nil {
+		log.Error("failed to verify risk rules", "error", err)
+		os.Exit(1)
+	}
+
+	walletService := services.NewWalletService(
+		walletRepo,
+		userRepo,
+		paymentRepo,
+		outboxRepo,
+		provider,
+		notifier,
+		mqClient, // publishes deposit receipts / realtime pushes it originates
+		cfg,
+		db,
+		ledgerService,
+		riskService, // Phase 8.2: blocking rules on the withdrawal path
+	)
+
+	log.Info("✓ services initialized")
+
+	// ═══════════════════════════════════════════════════════════════════════
 	// STEP 7.5: Start Outbox Dispatcher (CRITICAL)
 	// ═══════════════════════════════════════════════════════════════════════
 	// The dispatcher polls outbox_events and publishes to RabbitMQ.
@@ -176,11 +223,11 @@ func main() {
 	if mqClient.Enabled() {
 		hostname, _ := os.Hostname()
 		instanceID := fmt.Sprintf("worker-%s-%d", hostname, os.Getpid())
-		
+
 		dispatcher := dispatcher.NewOutboxDispatcher(outboxRepo, mqClient, instanceID)
 		dispatcher.Start(ctx)
 		defer dispatcher.Stop()
-		
+
 		log.Info("✓ outbox dispatcher started", "instance_id", instanceID)
 	} else {
 		log.Warn("⚠️ outbox dispatcher NOT started - RabbitMQ unavailable",
@@ -196,35 +243,29 @@ func main() {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════
-	// STEP 9: Start Email Dispatcher (if needed)
+	// STEP 9: Start Email Dispatchers (transactional email + receipts)
 	// ═══════════════════════════════════════════════════════════════════════
+	// The mailer is chosen by config (SMTP/Brevo in production, mock in dev),
+	// exactly like the API process — so a verification link the API enqueues and
+	// a receipt this worker enqueues go out over the same channel.
 	if mqClient.Enabled() {
-		mqClient.Consume(queue.QueueEmailDispatch, func(ctx context.Context, body []byte) error {
-			var msg queue.EmailMessage
-			if err := json.Unmarshal(body, &msg); err != nil {
-				return err
-			}
-			logger.FromContext(ctx).Info("📧 would send email", "to", msg.To, "subject", msg.Subject)
-			// TODO: Implement actual email sending
-			return nil
-		})
+		sender := mailer.New(cfg)
+		startEmailDispatcher(ctx, mqClient, sender)
 		log.Info("✓ email dispatcher started")
+
+		startReceiptDispatcher(ctx, mqClient, sender)
+		log.Info("✓ deposit receipt dispatcher started")
+
+		startBusinessEventDispatcher(ctx, mqClient, notifier)
+		log.Info("✓ business event dispatcher started")
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════
-	// STEP 10: Start SMS Dispatcher (if needed)
+	// STEP 10: Start SMS Dispatcher (out of launch scope — logs, never sends)
 	// ═══════════════════════════════════════════════════════════════════════
 	if mqClient.Enabled() {
-		mqClient.Consume(queue.QueueSMSDispatch, func(ctx context.Context, body []byte) error {
-			var msg queue.SMSMessage
-			if err := json.Unmarshal(body, &msg); err != nil {
-				return err
-			}
-			logger.FromContext(ctx).Info("📱 would send SMS", "to", msg.To)
-			// TODO: Implement actual SMS sending
-			return nil
-		})
-		log.Info("✓ SMS dispatcher started")
+		startSMSDispatcher(ctx, mqClient)
+		log.Info("✓ SMS dispatcher started (launch scope: disabled, messages logged not sent)")
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -234,6 +275,40 @@ func main() {
 	defer stopReconciliation()
 
 	log.Info("✓ reconciliation worker started")
+
+	// Phase 7.6/7.7: nightly trust reconciliation + hourly fee sweep. Runs
+	// immediately on boot so a restarted worker proves the books right away.
+	stopLedgerTrust := startLedgerTrustWorker(ctx, ledgerService)
+	defer stopLedgerTrust()
+
+	log.Info("✓ ledger trust worker started (fee sweep hourly, reconciliation nightly)")
+
+	// Phase 7.5/7.9: automatic Paystack settlement import. No settlement
+	// webhook exists, so batches arrive by polling — at boot (catch-up) and
+	// every 6 hours, deduped by external_ref. Mock provider → no feed → the
+	// pass logs "provider does not expose settlement reports" and moves on.
+	settlementFetcher, _ := provider.(payments.SettlementFetcher)
+	financeService := services.NewFinanceService(db, paymentRepo, ledgerService, settlementFetcher)
+	stopSettlementImport := startSettlementImportWorker(ctx, financeService)
+	defer stopSettlementImport()
+
+	log.Info("✓ settlement import worker started (boot + every 6h, 7-day lookback)")
+
+	// Phase 9: privacy sweeper — expires data-export bundles (24h window, PII
+	// wiped) and executes erasure requests whose 30-day grace has ended.
+	privacyService := services.NewPrivacyService(db, nil, services.NewAuditService(repositories.NewAuditRepository(db)), cfg.JWTSecret).
+		WithKYCCipher(cfg.KYCEncryptionKey)
+	stopPrivacySweep := startPrivacySweeper(ctx, privacyService)
+	defer stopPrivacySweep()
+
+	log.Info("✓ privacy sweeper started (export expiry + erasure execution, daily)")
+
+	// Phase 8: AML monitoring scan (every 5 min) + CTR daily scan (hourly,
+	// idempotent by unique key). Runs immediately on boot.
+	stopRisk := startRiskWorker(ctx, riskService)
+	defer stopRisk()
+
+	log.Info("✓ risk worker started (AML scan every 5m, CTR scan hourly)")
 
 	// ═══════════════════════════════════════════════════════════════════════
 	// STEP 12: Wait for Shutdown Signal
@@ -398,12 +473,14 @@ func startReconciliationWorker(
 	go func() {
 		// Run immediately on startup
 		reconcilePendingWithdrawals(ctx, db, provider, walletService)
+		reconcilePendingDeposits(ctx, db, walletService)
 
 		// Then run every 5 minutes
 		for {
 			select {
 			case <-ticker.C:
 				reconcilePendingWithdrawals(ctx, db, provider, walletService)
+				reconcilePendingDeposits(ctx, db, walletService)
 			case <-done:
 				ticker.Stop()
 				return
@@ -507,4 +584,50 @@ func reconcilePendingWithdrawals(
 	}
 
 	log.Info("✓ reconciliation complete")
+}
+
+// reconcilePendingDeposits recovers deposits whose webhook never arrived.
+//
+// WHY THIS EXISTS: webhooks are best-effort — the provider may have been unable
+// to reach us (local dev, network blip, deploy window). A deposit that stays
+// `pending` forever means the user paid and the wallet never credited.
+//
+// HOW IT IS SAFE: CreditFromPaymentReference re-verifies the charge with the
+// provider itself (it never trusts this sweep), locks the wallet, and skips any
+// ledger row whose reference already exists — so a webhook racing this loop
+// still credits exactly once. Payments the provider reports as still pending
+// are simply left for the next cycle.
+func reconcilePendingDeposits(
+	ctx context.Context,
+	db *gorm.DB,
+	walletService services.WalletService,
+) {
+	log := logger.FromContext(ctx)
+
+	// Give the provider's webhook plenty of time to arrive first.
+	cutoff := time.Now().Add(-10 * time.Minute)
+
+	var pending []models.Payment
+	if err := db.Where("channel = ? AND status = ? AND created_at < ?",
+		models.PaymentChannelDeposit, models.PaymentStatusPending, cutoff).
+		Find(&pending).Error; err != nil {
+		log.Error("deposit reconciliation query failed", "error", err)
+		return
+	}
+
+	if len(pending) == 0 {
+		log.Info("✓ no pending deposits to reconcile")
+		return
+	}
+
+	log.Info("found pending deposits", "count", len(pending))
+
+	for _, p := range pending {
+		if err := walletService.CreditFromPaymentReference(ctx, p.Reference, nil); err != nil {
+			log.Error("deposit reconciliation failed",
+				"reference", p.Reference, "error", err)
+			continue
+		}
+		log.Info("deposit reconciled", "reference", p.Reference, "amount_kobo", p.AmountKobo)
+	}
 }

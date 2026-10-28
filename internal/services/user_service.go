@@ -24,17 +24,18 @@ import (
 //
 // Responsibilities:
 //   - Get user profile
-//   - Update user profile (name)
+//   - Update user profile (name + address/occupation/employer)
 //   - Upload avatar image
 //   - Change password (with session revocation)
 //   - Update phone number (with OTP verification)
 //   - Request phone change OTP
 //   - Verify phone change OTP
+//   - Submit + read KYC verification (Phase 2)
 type UserService interface {
 	// GetProfile retrieves user profile by ID
 	GetProfile(ctx context.Context, userID uuid.UUID) (*dto.UserResponse, error)
 
-	// UpdateProfile updates user's name
+	// UpdateProfile updates user's name and optional profile detail fields
 	UpdateProfile(ctx context.Context, userID uuid.UUID, req dto.UpdateProfileRequest) (*dto.UserResponse, error)
 
 	// UploadAvatar uploads and sets user's avatar image
@@ -48,6 +49,13 @@ type UserService interface {
 
 	// VerifyPhoneChange verifies OTP and updates phone number
 	VerifyPhoneChange(ctx context.Context, userID uuid.UUID, req dto.VerifyPhoneChangeRequest) (*dto.UserResponse, error)
+
+	// SubmitKYC records a KYC submission (upserts the user's single row) and
+	// returns the PII-safe status view. Sets users.kyc_status to 'pending'.
+	SubmitKYC(ctx context.Context, userID uuid.UUID, req dto.SubmitKYCRequest) (*dto.KYCStatusResponse, error)
+
+	// GetKYCStatus returns the user's current submission state.
+	GetKYCStatus(ctx context.Context, userID uuid.UUID) (*dto.KYCStatusResponse, error)
 }
 
 // userService is the concrete implementation
@@ -55,6 +63,7 @@ type userService struct {
 	userRepo         repositories.UserRepository
 	otpRepo          repositories.OTPVerificationRepository
 	refreshTokenRepo repositories.RefreshTokenRepository
+	kycRepo          repositories.KYCSubmissionRepository
 	smsService       sms.SMSService
 	cloudinary       *cloudinary.CloudinaryService
 	config           *config.Config
@@ -66,6 +75,7 @@ func NewUserService(
 	userRepo repositories.UserRepository,
 	otpRepo repositories.OTPVerificationRepository,
 	refreshTokenRepo repositories.RefreshTokenRepository,
+	kycRepo repositories.KYCSubmissionRepository,
 	smsService sms.SMSService,
 	cloudinaryService *cloudinary.CloudinaryService,
 	cfg *config.Config,
@@ -74,6 +84,7 @@ func NewUserService(
 		userRepo:         userRepo,
 		otpRepo:          otpRepo,
 		refreshTokenRepo: refreshTokenRepo,
+		kycRepo:          kycRepo,
 		smsService:       smsService,
 		cloudinary:       cloudinaryService,
 		config:           cfg,
@@ -101,11 +112,16 @@ func (s *userService) GetProfile(ctx context.Context, userID uuid.UUID) (*dto.Us
 		KYCStatus:     user.KYCStatus,
 		Role:          user.Role,
 		IsActive:      user.IsActive,
+		Address:       user.Address,
+		Occupation:    user.Occupation,
+		Employer:      user.Employer,
 		CreatedAt:     user.CreatedAt,
 	}, nil
 }
 
-// UpdateProfile updates user's full name
+// UpdateProfile updates user's full name and optional profile detail fields.
+// Only the fields the client actually sent are written (nil pointers are
+// skipped), so a name-only edit never clobbers a previously saved address.
 func (s *userService) UpdateProfile(ctx context.Context, userID uuid.UUID, req dto.UpdateProfileRequest) (*dto.UserResponse, error) {
 	// Validate full name
 	fullName := strings.TrimSpace(req.FullName)
@@ -117,9 +133,17 @@ func (s *userService) UpdateProfile(ctx context.Context, userID uuid.UUID, req d
 		return nil, errors.ErrValidationFailed
 	}
 
-	// Update only the full name field
 	updates := map[string]interface{}{
 		"full_name": fullName,
+	}
+	if req.Address != nil {
+		updates["address"] = *req.Address
+	}
+	if req.Occupation != nil {
+		updates["occupation"] = *req.Occupation
+	}
+	if req.Employer != nil {
+		updates["employer"] = *req.Employer
 	}
 
 	err := s.userRepo.UpdatePartial(ctx, userID, updates)
@@ -278,6 +302,87 @@ func (s *userService) RequestPhoneChange(ctx context.Context, userID uuid.UUID, 
 		Message:        "OTP sent successfully",
 		ExpiresIn:      600, // 10 minutes
 		CanResendAfter: 120, // 2 minutes
+	}, nil
+}
+
+// SubmitKYC records the user's identity verification (BVN + NIN + doc type).
+//
+// One row per user: an existing submission is replaced so a re-submit updates
+// rather than duplicates the queue entry. users.kyc_status is reset to
+// 'pending' so the admin DecideKYC guard (which requires pending) accepts it.
+//
+// SECURITY: BVN/NIN are PII — written but never returned or logged. The
+// response only carries the last 4 digits. Encryption at rest is a follow-up.
+func (s *userService) SubmitKYC(ctx context.Context, userID uuid.UUID, req dto.SubmitKYCRequest) (*dto.KYCStatusResponse, error) {
+	bvn := strings.TrimSpace(req.BVN)
+	nin := strings.TrimSpace(req.NIN)
+	docType := strings.TrimSpace(req.DocType)
+
+	if bvn == "" || nin == "" || docType == "" {
+		return nil, errors.ErrValidationFailed
+	}
+
+	sub := &models.KYCSubmission{
+		UserID:      userID,
+		BVN:         bvn,
+		NIN:         nin,
+		DocType:     docType,
+		Status:      models.KYCStatusPending,
+		SubmittedAt: time.Now(),
+	}
+	if err := s.kycRepo.Upsert(ctx, sub); err != nil {
+		logger.Error("kyc-submit: failed to upsert submission", "user_id", userID, "error", err)
+		return nil, errors.ErrInternalServer
+	}
+
+	// Reset the user's KYC flag to pending so the admin can decide it.
+	if err := s.userRepo.UpdatePartial(ctx, userID, map[string]interface{}{"kyc_status": "pending"}); err != nil {
+		logger.Error("kyc-submit: failed to set kyc_status", "user_id", userID, "error", err)
+		return nil, errors.ErrInternalServer
+	}
+
+	return &dto.KYCStatusResponse{
+		KYCStatus:   "pending",
+		Status:      models.KYCStatusPending,
+		DocType:     docType,
+		BVNLast4:    sub.BVNLast4(),
+		NINLast4:    sub.NINLast4(),
+		SubmittedAt: sub.SubmittedAt,
+	}, nil
+}
+
+// GetKYCStatus returns the user's current submission state (PII-safe).
+func (s *userService) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*dto.KYCStatusResponse, error) {
+	user, err := s.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		if repositories.IsErrRecordNotFound(err) {
+			return nil, errors.ErrUserNotFound
+		}
+		return nil, errors.ErrInternalServer
+	}
+
+	sub, err := s.kycRepo.FindByUserID(ctx, userID)
+	if err != nil {
+		if repositories.IsErrRecordNotFound(err) {
+			// No submission yet — report the user-level status only.
+			return &dto.KYCStatusResponse{
+				KYCStatus:   user.KYCStatus,
+				Status:      "none",
+				SubmittedAt: user.CreatedAt,
+			}, nil
+		}
+		return nil, errors.ErrInternalServer
+	}
+
+	return &dto.KYCStatusResponse{
+		KYCStatus:   user.KYCStatus,
+		Status:      sub.Status,
+		DocType:     sub.DocType,
+		BVNLast4:    sub.BVNLast4(),
+		NINLast4:    sub.NINLast4(),
+		Reason:      sub.Reason,
+		SubmittedAt: sub.SubmittedAt,
+		DecidedAt:   sub.DecidedAt,
 	}, nil
 }
 

@@ -1,5 +1,15 @@
--- Migration 000016 Rollback: Drop properties table
--- This migration should only be used during controlled rollback in development/staging.
--- NEVER run this in production if properties have associated investments.
-
-DROP TABLE IF EXISTS properties;
+-- Migration 000016 Rollback: NO-OP (intentionally drops nothing)
+--
+-- The `properties` table is owned by migration 000010_add_investments, which
+-- creates it before the first foreign key REFERENCES properties(id). This
+-- migration's UP is a guarded no-op (CREATE TABLE IF NOT EXISTS + idempotent
+-- index/comment statements) for that same table, so its DOWN must not drop it.
+--
+-- An earlier version ran `DROP TABLE IF EXISTS properties`, which failed the
+-- down chain: `investments` (also created by 000010) still held
+-- fk_investments_property REFERENCES properties(id), so PostgreSQL refused the
+-- drop. It also would have been wrong even if it succeeded — 000016 never
+-- created the table it would have removed.
+--
+-- The real DROP lives in 000010's down file (`DROP TABLE IF EXISTS
+-- investments CASCADE`), which runs after this one on the way down.

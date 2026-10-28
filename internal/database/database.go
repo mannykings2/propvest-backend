@@ -3,6 +3,8 @@ package database
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -85,6 +87,15 @@ func Connect(cfg *config.Config) {
 //   000001_add_users_table.up.sql   ← your forward migration
 //   000001_add_users_table.down.sql ← your rollback migration
 func RunMigrations(databaseURL string) error {
+	// Resolve the migrations directory regardless of the working directory.
+	// The app runs from the repo root / container WORKDIR (/app), but `go test`
+	// runs each test binary with CWD set to its package dir (tests/integration),
+	// so a bare relative path would miss. Walk up from CWD until we find it.
+	migrationsDir, err := findMigrationsDir()
+	if err != nil {
+		return err
+	}
+
 	// Get the underlying *sql.DB from GORM
 	sqlDB, err := DB.DB()
 	if err != nil {
@@ -98,9 +109,11 @@ func RunMigrations(databaseURL string) error {
 	}
 
 	// Create the migration instance
-	// "file://..." tells migrate where to find migration files
+	// A plain relative path (no "file://" scheme) resolves to the migrations
+	// directory from the working directory on every OS. The "file://" form
+	// parses the first segment as a URL host, which breaks on Windows.
 	m, err := migrate.NewWithDatabaseInstance(
-		"file://internal/database/migrations",
+		"file://"+filepath.ToSlash(migrationsDir),
 		"postgres",
 		driver,
 	)
@@ -163,4 +176,33 @@ func AutoMigrate() {
 	}
 
 	log.Println("Database migration completed (via AutoMigrate)")
+}
+
+// findMigrationsDir locates the SQL migrations directory by walking up from the
+// current working directory. The app runs from the repo root (and the container
+// WORKDIR /app), but `go test` runs each test binary with CWD set to its package
+// directory (e.g. tests/integration), so a bare relative path misses.
+func findMigrationsDir() (string, error) {
+	const rel = "internal/database/migrations"
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	for dir := wd; ; {
+		cand := filepath.Join(dir, rel)
+		if fi, statErr := os.Stat(cand); statErr == nil && fi.IsDir() {
+			return cand, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached filesystem root without a match.
+			break
+		}
+		dir = parent
+	}
+
+	return "", fmt.Errorf("migrations directory %q not found from %q", rel, wd)
 }

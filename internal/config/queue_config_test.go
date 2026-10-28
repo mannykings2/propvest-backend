@@ -201,9 +201,9 @@ func TestQueueConfig_IsEnabled(t *testing.T) {
 
 func TestQueueConfig_GetConcurrency(t *testing.T) {
 	cfg := &QueueConfig{
-		Concurrency:            10,
-		DepositConcurrency:     15,
-		WithdrawalConcurrency:  5,
+		Concurrency:             10,
+		DepositConcurrency:      15,
+		WithdrawalConcurrency:   5,
 		NotificationConcurrency: 0, // use default
 	}
 

@@ -82,7 +82,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	//   - Request ID (from middleware)
 	//   - Cancellation signal (if client disconnects)
 	//   - Deadline (if timeout is configured)
-	result, err := h.authService.Register(c.Request.Context(), req)
+	// auditContext additionally stamps IP/user-agent so the consent rows
+	// registration writes are NDPA-grade evidence (from where, with what client).
+	result, err := h.authService.Register(auditContext(c), req)
 	if err != nil {
 		// Service returned an error - map it to HTTP status code
 		h.handleError(c, err)
@@ -305,6 +307,85 @@ func (h *AuthHandler) LogoutAll(c *gin.Context) {
 
 	// Return success
 	response.SuccessWithMessage(c, http.StatusOK, "Logged out from all devices")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMAIL VERIFICATION + PASSWORD RESET HANDLERS (Phase 2, Workstream D3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ForgotPassword handles POST /api/v1/auth/forgot-password (public).
+//
+// Always returns success, even for unknown emails, so the endpoint can't be
+// used to enumerate accounts. The reset link is delivered by email; in dev the
+// mock mailer logs it to the server console.
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	var req dto.ForgotPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	if err := h.authService.ForgotPassword(c.Request.Context(), req.Email); err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "If an account exists for that email, a reset link has been sent.")
+}
+
+// ResetPassword handles POST /api/v1/auth/reset-password (public).
+//
+// Consumes the emailed token, sets the new password, and revokes all sessions.
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var req dto.ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	if err := h.authService.ResetPassword(c.Request.Context(), req.Token, req.NewPassword); err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "Password reset successful. Please log in with your new password.")
+}
+
+// VerifyEmail handles POST /api/v1/auth/verify-email (public).
+//
+// Consumes the verification token from the email link and marks the account
+// verified. Accepts the token via body (the frontend reads it from the query
+// string and posts it here).
+func (h *AuthHandler) VerifyEmail(c *gin.Context) {
+	var req dto.VerifyEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	if err := h.authService.VerifyEmail(c.Request.Context(), req.Token); err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "Email verified successfully.")
+}
+
+// ResendVerification handles POST /api/v1/auth/resend-verification (public).
+// Always returns success (no account enumeration); invalidates prior tokens.
+func (h *AuthHandler) ResendVerification(c *gin.Context) {
+	var req dto.ResendVerificationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	if err := h.authService.ResendVerification(c.Request.Context(), req.Email); err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "If that email is registered and unverified, a new verification link has been sent.")
 }
 
 // handleError maps service-layer errors to HTTP responses

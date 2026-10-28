@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"encoding/json"
+	
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 )
@@ -99,4 +101,52 @@ func InvestmentMetricsToResponse(metrics *repositories.InvestmentMetrics) Invest
 		AverageInvestmentKobo:  metrics.AverageInvestmentKobo,
 		AverageInvestmentNaira: float64(metrics.AverageInvestmentKobo) / 100.0,
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTIFICATION MAPPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// NotificationToResponse converts a models.Notification into a NotificationResponse DTO.
+// This is the ONLY place in the codebase that does this conversion.
+func NotificationToResponse(notif models.Notification) NotificationResponse {
+	return NotificationResponse{
+		ID:        notif.ID,
+		Type:      notif.Type,
+		Title:     notif.Title,
+		Body:      notif.Body,
+		Read:      notif.Read,
+		Metadata:  json.RawMessage(notif.Metadata), // datatypes.JSON is []byte, cast to json.RawMessage
+		CreatedAt: notif.CreatedAt,
+	}
+}
+
+// NotificationsToResponse converts a slice of notifications to DTOs.
+func NotificationsToResponse(notifications []models.Notification) []NotificationResponse {
+	responses := make([]NotificationResponse, len(notifications))
+	for i, notif := range notifications {
+		responses[i] = NotificationToResponse(notif)
+	}
+	return responses
+}
+
+// NotificationPreferenceToResponse converts a models.NotificationPreference into a NotificationPreferenceResponse DTO.
+func NotificationPreferenceToResponse(pref models.NotificationPreference) NotificationPreferenceResponse {
+	return NotificationPreferenceResponse{
+		UserID:           pref.UserID,
+		NotificationType: pref.NotificationType,
+		InAppEnabled:     pref.InAppEnabled,
+		EmailEnabled:     pref.EmailEnabled,
+		SMSEnabled:       pref.SMSEnabled,
+		UpdatedAt:        pref.UpdatedAt,
+	}
+}
+
+// NotificationPreferencesToResponse converts a slice of preferences to DTOs.
+func NotificationPreferencesToResponse(preferences []models.NotificationPreference) []NotificationPreferenceResponse {
+	responses := make([]NotificationPreferenceResponse, len(preferences))
+	for i, pref := range preferences {
+		responses[i] = NotificationPreferenceToResponse(pref)
+	}
+	return responses
 }

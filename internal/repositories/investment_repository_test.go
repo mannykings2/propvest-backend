@@ -5,26 +5,128 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 // setupInvestmentTestDB creates an in-memory SQLite database for testing.
 func setupInvestmentTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	// Use pure-Go SQLite driver (glebarez/sqlite) instead of CGO-based driver
+	// This allows tests to run on Windows without requiring GCC
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		// Disable foreign key constraints for faster tests
+		DisableForeignKeyConstraintWhenMigrating: true,
+		// CreateBatchSize: 100,
+	})
 	require.NoError(t, err, "failed to open test database")
 
-	// Run migrations
-	err = db.AutoMigrate(
-		&models.User{},
-		&models.Property{},
-		&models.Investment{},
-	)
-	require.NoError(t, err, "failed to migrate test database")
+	// Register callback to auto-generate UUIDs for primary keys
+	// This replaces PostgreSQL's gen_random_uuid() with application-level UUID generation
+	db.Callback().Create().Before("gorm:create").Register("generate_uuid", func(db *gorm.DB) {
+		if db.Statement.Schema != nil {
+			for _, field := range db.Statement.Schema.PrimaryFields {
+				if field.DataType == "uuid" {
+					fieldValue := field.ReflectValueOf(db.Statement.Context, db.Statement.ReflectValue)
+					if fieldValue.IsZero() {
+						_ = field.Set(db.Statement.Context, db.Statement.ReflectValue, uuid.New())
+					}
+				}
+			}
+		}
+	})
+
+	// Run migrations - we need to manually create tables to avoid PostgreSQL-specific SQL
+	// SQLite doesn't support gen_random_uuid(), so we skip GORM's AutoMigrate
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			user_code TEXT NOT NULL UNIQUE,
+			email TEXT NOT NULL UNIQUE,
+			phone TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			full_name TEXT NOT NULL,
+			kyc_status TEXT NOT NULL DEFAULT 'pending',
+			role TEXT NOT NULL DEFAULT 'investor',
+			is_active INTEGER NOT NULL DEFAULT 1,
+			avatar_url TEXT,
+			email_verified INTEGER NOT NULL DEFAULT 0,
+			suspended_at DATETIME,
+			suspended_by TEXT,
+			suspended_reason TEXT,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME
+		)
+	`).Error
+	require.NoError(t, err, "failed to create users table")
+
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS properties (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			slug TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL,
+			property_type TEXT NOT NULL,
+			address TEXT NOT NULL,
+			city TEXT NOT NULL,
+			state TEXT NOT NULL,
+			country TEXT NOT NULL DEFAULT 'Nigeria',
+			latitude REAL,
+			longitude REAL,
+			target_amount INTEGER NOT NULL,
+			raised_amount INTEGER NOT NULL DEFAULT 0,
+			currency TEXT NOT NULL DEFAULT 'NGN',
+			roi_percent REAL NOT NULL,
+			duration_months INTEGER NOT NULL,
+			total_units INTEGER NOT NULL,
+			units_sold INTEGER NOT NULL DEFAULT 0,
+			unit_price INTEGER NOT NULL,
+			minimum_investment INTEGER NOT NULL,
+			investor_count INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'draft',
+			featured INTEGER NOT NULL DEFAULT 0,
+			verified INTEGER NOT NULL DEFAULT 0,
+			trending INTEGER NOT NULL DEFAULT 0,
+			cover_image_url TEXT,
+			launch_date DATETIME,
+			expected_completion_date DATETIME,
+			actual_completion_date DATETIME,
+			created_by TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+			updated_by TEXT,
+			deleted_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME
+		)
+	`).Error
+	require.NoError(t, err, "failed to create properties table")
+
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS investments (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			property_id TEXT NOT NULL,
+			slots INTEGER NOT NULL,
+			amount_kobo INTEGER NOT NULL,
+			unit_price_kobo INTEGER NOT NULL,
+			currency TEXT NOT NULL DEFAULT 'NGN',
+			status TEXT NOT NULL DEFAULT 'active',
+			reference TEXT NOT NULL UNIQUE,
+			idempotency_key TEXT,
+			cancelled_at DATETIME,
+			completed_at DATETIME,
+			refunded_at DATETIME,
+			created_at DATETIME,
+			updated_at DATETIME,
+			deleted_at DATETIME,
+			FOREIGN KEY (user_id) REFERENCES users(id),
+			FOREIGN KEY (property_id) REFERENCES properties(id)
+		)
+	`).Error
+	require.NoError(t, err, "failed to create investments table")
 
 	return db
 }

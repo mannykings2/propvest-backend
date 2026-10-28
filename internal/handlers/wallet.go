@@ -896,6 +896,85 @@ func (h *WalletHandler) HandleWebhook(c *gin.Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HANDLER METHOD: ListBanks (Phase 2, Workstream A1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ListBanks handles GET /api/v1/wallet/banks
+//
+// Returns the selectable Nigerian bank list with CBN codes. The withdrawal UI
+// needs codes (not just names) to send bank_code on withdrawals — previously
+// every withdrawal sent a hardcoded default because no codes existed client-side.
+//
+// Static provider-agnostic data: bank codes are stable, no provider call needed.
+func (h *WalletHandler) ListBanks(c *gin.Context) {
+	response.Success(c, h.walletService.ListBanks())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HANDLER METHOD: VerifyAccount (Phase 2, Workstream A1b)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// VerifyAccount handles POST /api/v1/wallet/verify-account
+//
+// Resolves an account number at a bank via the payment provider and returns the
+// bank-verified account name. This replaces the frontend's fake setTimeout
+// "verification" — the withdrawal API requires an account_name that matches
+// bank records (the service enforces this fuzzy match).
+func (h *WalletHandler) VerifyAccount(c *gin.Context) {
+	if _, err := getUserIDFromContext(c); err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req dto.VerifyAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	result, err := h.walletService.VerifyAccount(c.Request.Context(), req)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.Success(c, result)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HANDLER METHOD: TransferEarnings (Phase 2, Workstream A2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TransferEarnings handles POST /api/v1/wallet/transfer-earnings
+//
+// Moves funds from the earnings balance to the main balance so they become
+// withdrawable. The Withdraw page's transfer panel was a fake setTimeout that
+// never called a service — this is the real endpoint it now calls.
+//
+// Amount is in kobo (matches frontend). Returns the updated wallet.
+func (h *WalletHandler) TransferEarnings(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req dto.TransferEarningsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	wallet, err := h.walletService.TransferEarnings(c.Request.Context(), userID, req.Amount)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "Earnings transferred to main wallet", wallet)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 

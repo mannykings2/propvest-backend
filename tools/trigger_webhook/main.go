@@ -10,14 +10,21 @@ import (
 	"io"
 	"net/http"
 	"os"
+
+	"github.com/joho/godotenv"
 )
 
 // This tool manually triggers a webhook to credit your wallet after a test payment.
 // Use this during local development when Paystack cannot reach your localhost.
 //
+// Signature: the API verifies X-Paystack-Signature as HMAC-SHA512 of the raw
+// body keyed with PAYSTACK_WEBHOOK_SECRET (falling back to PAYSTACK_SECRET_KEY).
+// This tool loads the repo's .env and uses the SAME key, so a local webhook
+// validates. Export the variable to override, or set PROPVEST_WEBHOOK_URL to
+// target a non-default API origin.
+//
 // Usage:
-//   go run tools/trigger_webhook.go DEP-759B35C0-EB0
-
+//   go run tools/trigger_webhook <payment-reference>
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run tools/trigger_webhook.go <payment-reference>")
@@ -81,13 +88,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Generate signature (you can use any secret or leave it as test_secret)
-	// Since your PAYSTACK_WEBHOOK_SECRET is not set, the system uses the secret key
-	secret := "sk_test_YOUR_TEST_SECRET_KEY"
+	// Load the API's .env (same file the server reads) unless the variables are
+	// already in the environment. A hard-coded placeholder secret can never
+	// produce a signature the API accepts — that was the old failure mode.
+	_ = godotenv.Load(".env")
+
+	secret := os.Getenv("PAYSTACK_WEBHOOK_SECRET")
+	if secret == "" {
+		// Paystack signs webhooks with the secret key when no webhook secret is set.
+		secret = os.Getenv("PAYSTACK_SECRET_KEY")
+	}
+	if secret == "" {
+		fmt.Println("ERROR: PAYSTACK_WEBHOOK_SECRET (or PAYSTACK_SECRET_KEY) is not set.")
+		fmt.Println("Run from the repo root so .env is loaded, or export the variable.")
+		os.Exit(1)
+	}
 	signature := generateSignature(string(body), secret)
 
 	// Send webhook to your local server
-	url := "http://localhost:8081/api/v1/webhooks/payment"
+	url := os.Getenv("PROPVEST_WEBHOOK_URL")
+	if url == "" {
+		url = "http://localhost:8081/api/v1/webhooks/payment"
+	}
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		fmt.Printf("Failed to create request: %v\n", err)

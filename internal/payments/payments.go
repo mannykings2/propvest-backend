@@ -51,8 +51,25 @@ func New(cfg *config.Config) Provider {
 		return NewHybridProvider(cfg)
 	default:
 		logger.Info("payment provider: mock (no real charges)")
-		return &MockProvider{}
+		return &MockProvider{SecretKey: mockWebhookKey(cfg)}
 	}
+}
+
+// mockWebhookKey gives the mock provider the SAME signing key the Paystack
+// provider uses (PAYSTACK_WEBHOOK_SECRET, else PAYSTACK_SECRET_KEY), so a
+// locally triggered webhook (tools/trigger_webhook) validates identically
+// whether the API runs in mock or hybrid/paystack mode. Without this, New()
+// used to hand the mock an empty key while the trigger tool signed with the
+// configured one — every local webhook came back "Invalid signature".
+func mockWebhookKey(cfg *config.Config) string {
+	if cfg != nil && cfg.PaystackWebhookSecret != "" {
+		return cfg.PaystackWebhookSecret
+	}
+	if cfg != nil && cfg.PaystackSecretKey != "" {
+		return cfg.PaystackSecretKey
+	}
+	// Historical development default (NewMockProvider).
+	return "mock-secret-key"
 }
 
 // NewProvider is an alias kept for the composition root's readability.
@@ -68,6 +85,17 @@ type PaystackProvider struct {
 	webhookSecret string
 	callbackURL   string
 	http          *http.Client
+	// baseURL overrides the API origin; empty means production. Tests point it
+	// at an httptest server so response parsing is exercised without the
+	// network or real keys.
+	baseURL string
+}
+
+func (p *PaystackProvider) apiBase() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "https://api.paystack.co"
 }
 
 func (p *PaystackProvider) Name() string { return "paystack" }
@@ -143,7 +171,7 @@ func (p *PaystackProvider) VerifyWebhookSignature(signature string, body []byte)
 // post/get are tiny helpers around the Paystack REST API with bearer auth.
 func (p *PaystackProvider) post(ctx context.Context, path string, body any, out any) error {
 	buf, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.paystack.co"+path, bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.apiBase()+path, bytes.NewReader(buf))
 	if err != nil {
 		return err
 	}
@@ -153,7 +181,7 @@ func (p *PaystackProvider) post(ctx context.Context, path string, body any, out 
 }
 
 func (p *PaystackProvider) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.paystack.co"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.apiBase()+path, nil)
 	if err != nil {
 		return err
 	}

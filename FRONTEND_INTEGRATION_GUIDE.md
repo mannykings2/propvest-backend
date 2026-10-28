@@ -406,39 +406,76 @@ ALLOWED_ORIGINS=https://propvest.com,https://www.propvest.com,https://app.propve
 
 ## 📡 API Endpoints Reference
 
+> Verified against `internal/routes/v1/routes.go` on 2026-10-21. An earlier version of
+> these tables listed verbs/paths that were never registered (`PUT /users/me`,
+> `/users/me/avatar`, `/wallets/*`); they are corrected below.
+
 ### Authentication Endpoints
 
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
 | POST | `/api/v1/auth/register` | Register new user | No |
 | POST | `/api/v1/auth/login` | Login user | No |
-| POST | `/api/v1/auth/logout` | Logout user | Yes |
 | POST | `/api/v1/auth/refresh` | Refresh access token | No |
-| POST | `/api/v1/auth/verify-email` | Verify email with token | No |
-| POST | `/api/v1/auth/resend-verification` | Resend verification email | Yes |
-| POST | `/api/v1/auth/forgot-password` | Request password reset | No |
-| POST | `/api/v1/auth/reset-password` | Reset password with token | No |
+| POST | `/api/v1/auth/logout` | Logout current device | No* |
+| POST | `/api/v1/auth/logout-all` | Logout from all devices | Yes |
+
+> *`/logout` validates the refresh token from the request body rather than the
+> Authorization header. The following auth endpoints are **not yet implemented**
+> (commented out in `routes.go`): `verify-email`, `resend-verification`,
+> `forgot-password`, `reset-password`.
 
 ### User Endpoints
 
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
 | GET | `/api/v1/users/me` | Get current user profile | Yes |
-| PUT | `/api/v1/users/me` | Update user profile | Yes |
-| POST | `/api/v1/users/me/avatar` | Upload avatar image | Yes |
-| POST | `/api/v1/users/me/phone/verify` | Send OTP to phone | Yes |
-| POST | `/api/v1/users/me/phone/confirm` | Confirm OTP code | Yes |
+| PATCH | `/api/v1/users/me` | Update profile (name) | Yes |
+| PATCH | `/api/v1/users/avatar` | Upload avatar image | Yes |
+| PATCH | `/api/v1/users/password` | Change password | Yes |
+| POST | `/api/v1/users/phone/request` | Request phone change (sends OTP) | Yes |
+| POST | `/api/v1/users/phone/verify` | Verify phone change with OTP | Yes |
 
 ### Wallet Endpoints
 
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
-| GET | `/api/v1/wallets/me` | Get user wallet | Yes |
-| GET | `/api/v1/wallets/me/transactions` | Get wallet transactions | Yes |
-| POST | `/api/v1/wallets/deposit` | Initiate deposit | Yes |
-| POST | `/api/v1/wallets/withdraw` | Request withdrawal | Yes |
+| GET | `/api/v1/wallet` | Get user wallet | Yes |
+| GET | `/api/v1/wallet/transactions` | Get transaction history (paginated) | Yes |
+| POST | `/api/v1/wallet/deposit` | Initiate deposit via payment provider | Yes |
+| POST | `/api/v1/wallet/withdraw` | Request withdrawal to bank account | Yes |
+| GET | `/api/v1/wallet/deposit/callback` | Payment success callback page | No |
 
-For complete API documentation, see: `postman/API_ENDPOINTS_REFERENCE.md`
+### Investment & Portfolio Endpoints
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| POST | `/api/v1/investments` | Create investment (purchase slots) | Yes |
+| GET | `/api/v1/investments` | List user's investments (paginated) | Yes |
+| GET | `/api/v1/investments/:id` | Get single investment | Yes |
+| GET | `/api/v1/portfolio/summary` | Portfolio summary metrics | Yes |
+
+### Notification Endpoints
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/api/v1/notifications` | List notifications (paginated) | Yes |
+| PATCH | `/api/v1/notifications/:id/read` | Mark one read | Yes |
+| PATCH | `/api/v1/notifications/read-all` | Mark all read | Yes |
+| DELETE | `/api/v1/notifications/:id` | Delete one | Yes |
+| GET | `/api/v1/notifications/preferences` | Get preferences | Yes |
+| PUT | `/api/v1/notifications/preferences` | Batch update preferences | Yes |
+| PUT | `/api/v1/notifications/preferences/:type` | Update one preference type | Yes |
+
+### Public Property Endpoints
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/api/v1/properties` | List properties (paginated) | No |
+| GET | `/api/v1/properties/:id` | Get property details | No |
+
+For complete API documentation (including the admin routes), see:
+`postman/API_ENDPOINTS_REFERENCE.md` and the 🗺️ UI/UX ↔ API Blueprint below.
 
 ---
 
@@ -664,7 +701,204 @@ For issues or questions:
 
 ---
 
-**Last Updated:** 2024
+## 🗺️ UI/UX ↔ API Blueprint (Page-by-Page Integration Map)
+
+> **Purpose:** This section maps every backend endpoint to the frontend UI/page that
+> should consume it, **and** every existing frontend page to the API structure needed to
+> feed it. No existing page is removed — pages that currently have no backend get a
+> proposed API contract instead.
+>
+> **Basis:** Derived from the full backend route table (`internal/routes/v1/routes.go`) and
+> the frontend route/page inventory (`src/App.jsx`, `src/features/*`, `src/services/*`).
+> Verified against a running backend (v1) during the integration audit.
+
+### Current Page Wiring Status
+
+| Route | Page Component | Fed by | Status |
+|-------|---------------|--------|--------|
+| `/` | `LandingPage` | — (marketing) | N/A |
+| `/dashboard` | `Dashboard` | `authService`, `walletService`, `portfolioService` | ⚠️ partial |
+| `/properties`, `/properties/:id` | `Properties` | `propertyService` | ✅ list + detail |
+| `/portfolio` | `Portfolio` | `portfolioService`, `walletService` | ⚠️ investments ✅, vote/trigger-sale ❌ |
+| `/offplan`, `/offplan/:id` | `OffPlan` | `offplanService` | ❌ no backend |
+| `/withdraw` | `Withdraw` | `walletService` | ⚠️ withdraw ✅, bank list ❌ |
+| `/profile` | `Profile` | `authService` | ⚠️ get ✅; update/avatar/KYC ❌ (wrong verbs) |
+| `/documents` | `Documents` | — (static) | ❌ no backend |
+| `/support` | `Support` | — (static) | ❌ no backend |
+| `/developer` | `DeveloperPortal` | — (`DEV_PROPS` constant) | ❌ no backend |
+| `/admin` | `AdminDashboard` | — (hardcoded constants) | ❌ no backend |
+
+---
+
+### Direction A — Backend Endpoints That Need a UI
+
+These capabilities exist in the backend but are not yet consumed by any page.
+
+#### A1. Notifications (7 endpoints, zero UI) — highest-value gap
+
+**Existing endpoints:**
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/v1/notifications` | List (paginated, returns `unread_count`) |
+| PATCH | `/api/v1/notifications/:id/read` | Mark one read |
+| PATCH | `/api/v1/notifications/read-all` | Mark all read |
+| DELETE | `/api/v1/notifications/:id` | Delete one |
+| GET | `/api/v1/notifications/preferences` | Get preferences |
+| PUT | `/api/v1/notifications/preferences` | Batch update |
+| PUT | `/api/v1/notifications/preferences/:type` | Update one type |
+
+**UI to build:**
+- **`NotificationCenter`** — bell dropdown in the app shell/header. List, unread badge
+>   (use `unread_count`), mark-one-read, mark-all-read, delete.
+- **`NotificationPreferences`** — `/profile/notifications` toggles per type (email/in-app/SMS).
+- **New service:** `src/services/notificationService.js` (mirror existing service pattern).
+
+#### A2. Admin — the entire `admin/*` block needs real pages
+
+`AdminDashboard.jsx` currently renders hardcoded `ADMIN_KYC`, `ADMIN_PROPS`, `PAYOUT_PROPS`,
+`ALL_PERMISSIONS`. Split into data-driven sub-routes under `/admin`:
+
+| Proposed page | Backend endpoints |
+|---------------|-------------------|
+| `/admin` Overview | `GET /admin/dashboard` |
+| `/admin/users` | `GET /admin/users`, `GET/PATCH /admin/users/:id`, `PATCH …/suspend`, `…/activate`, `POST …/reset-password`, `POST …/logout-all`, `PATCH …/role`, `DELETE /admin/users/:id` |
+| `/admin/kyc` | `PATCH /admin/users/:id/kyc` (approve/reject) |
+| `/admin/properties` | `GET/POST/PATCH/DELETE /admin/properties`, `POST …/:id/publish` |
+| `/admin/properties/:id/media` | `POST/DELETE/PATCH …/:id/images…`, `POST/DELETE/PATCH …/:id/documents…` |
+| `/admin/investments` | `GET /admin/investments`, `GET /admin/investments/metrics`, `GET /admin/properties/:id/investments` |
+| `/admin/finance` | `GET /admin/transactions`, `…/:id`, `GET /admin/payments`, `…/:id` |
+| `/admin/audit` | `GET /admin/audit-logs`, `…/:id`, `GET /admin/audit-logs/export` (CSV) |
+| `/admin/reports` | `POST /admin/reports/generate` |
+| `/admin/health` | `GET /admin/health/system`, `GET /admin/health/queues` |
+| `/admin/broadcast` | `POST /admin/messaging/send` (single/segment/all targeting) |
+
+> **Note:** `admin/*` routes are role-gated (`RequireAdmin` / `RequireSuperAdmin`). Frontend
+> must gate navigation on `user.role` and handle 403 gracefully.
+
+#### A3. Orphaned endpoints (small wire-ups)
+| Endpoint(s) | UI to build |
+|-------------|-------------|
+| `POST /users/phone/request` + `/users/phone/verify` | Phone-change flow in Profile (request → OTP entry) |
+| `PATCH /users/password` | Change-password form in Profile |
+| `POST /auth/logout-all` | "Sign out of all devices" button in Profile security |
+| `GET /portfolio/summary` | Replace client-side metric computation on Dashboard/Portfolio |
+
+---
+
+### Direction B — Existing UI That Needs an API Designed
+
+These pages already exist and are **kept as-is**; the following endpoints feed them.
+All proposed shapes follow backend conventions: `{success, data}` envelope, kobo-denominated
+integer amounts, and the standard pagination block.
+
+#### B1. OffPlan (`/offplan`, `/offplan/:id`)
+
+`offplanService.js` already calls these paths — implement them server-side.
+```
+GET    /api/v1/offplan/projects
+  → { success, data: { projects: [{ id, title, location, minimum_investment_kobo,
+                                   roi_percent, duration_months, developer, cover_image_url }],
+                       pagination: {...} } }
+
+GET    /api/v1/offplan/projects/:id
+  → { success, data: { ...project, developer, milestones: [...], tiers: [...] } }
+
+POST   /api/v1/offplan/projects/:id/subscribe
+  body { amount_kobo, payment_method }
+  → 201 { success, data: { subscription_id, status, authorization_url } }
+
+GET    /api/v1/offplan/projects/:id/subscriptions
+  → { success, data: { subscriptions: [...] } }   // current user's positions
+```
+**New tables:** `offplan_projects`, `offplan_subscriptions` (FK `developer_id` so B5 can create them).
+
+#### B2. Portfolio — vote + trigger-sale (`castInvestmentVote`, `canTrigger`)
+```
+GET    /api/v1/investments/:id/vote
+  → { success, data: { vote_active, ends_at, vote_for, vote_against, my_vote } }
+
+POST   /api/v1/investments/:id/vote
+  body { choice: "for" | "against" }
+  → { success, data: { vote_for, vote_against, my_vote } }
+
+POST   /api/v1/investments/:id/trigger-sale
+  body { reason }
+  → 202 { success, data: { proposal_id, status: "pending" } }
+```
+> The investment DTO must also emit `vote_active`, `can_trigger`, `vote_for`,
+> `vote_against`, `my_vote` — `portfolioService.normalizeInvestment` already reads these.
+
+#### B3. Withdraw — bank list + earnings transfer
+```
+GET    /api/v1/wallet/banks
+  → { success, data: [{ name, code, slug }] }   // cache or proxy Paystack /bank
+
+POST   /api/v1/wallet/transfer-earnings
+  body { amount_kobo }
+  → { success, data: { main_balance, earnings_balance } }  // earnings → main
+```
+
+#### B4. Profile — KYC, avatar, update (mostly wire-ups to existing endpoints)
+```
+POST   /api/v1/users/kyc            // multipart: bvn, nin, id_document, selfie
+  → 202 { success, data: { kyc_status: "pending", tier } }
+
+GET    /api/v1/users/kyc/status
+  → { success, data: { kyc_status, tier, submitted_at, rejection_reason } }
+```
+> **Verb fixes only** (endpoints already exist): change `PUT /users/me` → `PATCH /users/me`,
+> and `POST /users/me/avatar` → `PATCH /users/avatar`.
+
+#### B5. Developer portal (`/developer`)
+
+Reuses the property service layer with a `developer` role scope (not `admin`). The page's
+existing title-document checklist (C-of-O, survey plan, building approval, deed, EIA) maps
+to `doc_type` values.
+```
+GET    /api/v1/developer/properties              → own listings + status
+POST   /api/v1/developer/properties              → create draft
+PATCH  /api/v1/developer/properties/:id          → edit draft
+POST   /api/v1/developer/properties/:id/documents  // multipart { doc_type, file }
+GET    /api/v1/developer/properties/:id/documents  → [{ doc_type, status, uploaded_at }]
+POST   /api/v1/developer/properties/:id/submit     → draft → pending_review
+GET    /api/v1/developer/payouts                  → payout history
+```
+
+#### B6. Documents (`/documents`)
+```
+GET    /api/v1/documents?type=statement|contract|receipt
+  → { success, data: { documents: [{ id, name, type, property, issued_at, size, url }],
+                       pagination } }
+
+GET    /api/v1/documents/:id/download   → 302 signed URL (R2/Cloudinary)
+```
+Backed by a `user_documents` view joining investments → property documents + generated statements.
+
+#### B7. Support (`/support`)
+```
+GET    /api/v1/support/faqs                      → public [{ id, question, answer, category }]
+POST   /api/v1/support/tickets                   body { subject, category, message, attachment_ids }
+GET    /api/v1/support/tickets                   → user's tickets
+GET    /api/v1/support/tickets/:id               → ticket + replies
+POST   /api/v1/support/tickets/:id/replies       body { message }
+```
+**New tables:** `support_tickets`, `support_replies`, `faqs`.
+
+---
+
+### Suggested Build Order
+
+| Phase | Scope | Rationale |
+|-------|-------|-----------|
+| 1 | B4 profile verb fixes, A3 orphaned endpoints, A1 notification center | Highest value, lowest effort |
+| 2 | B3 banks + transfer-earnings | Completes the existing Withdraw flow |
+| 3 | B1 OffPlan + B2 voting | Unblocks two existing pages |
+| 4 | B5 developer, B6 documents, B7 support | New tables, more design |
+| 5 | A2 admin (split `AdminDashboard.jsx`) | Largest surface; do after investor flows |
+
+---
+
+**Last Updated:** 2026-10-20
 **Backend Version:** v1
 **Minimum Frontend Requirements:**
 - Node.js 16+

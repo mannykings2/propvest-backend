@@ -3,6 +3,13 @@
 -- Properties go through a lifecycle: draft → active → funded → completed
 -- Only admins can create/manage properties; public users can only view active/funded/completed properties.
 
+-- NOTE: The `properties` table is owned by migration 000010_add_investments,
+-- which creates it before the first foreign key REFERENCES properties(id).
+-- This migration previously created it here too; CREATE TABLE IF NOT EXISTS
+-- silently no-op'd against a legacy table and left this migration's trailing
+-- COMMENT ON COLUMN statements to fail, aborting the chain. The table now
+-- exists by the time this migration runs, so only the comments below apply.
+
 CREATE TABLE IF NOT EXISTS properties (
     -- Primary Key
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

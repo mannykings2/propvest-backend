@@ -1,0 +1,13 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Migration 000035: policy_versions must hold VERSION HISTORY
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 000034 declared `policy VARCHAR(40) NOT NULL UNIQUE`, which allows only ONE
+-- row per policy forever: every BumpPolicyVersion insert failed with
+-- 23505 (policy_versions_policy_key). Consent evidence needs the history —
+-- each version is what a user agreed to at a point in time — and re-consent
+-- is triggered by comparing the pinned version against the LATEST row.
+--
+-- UNIQUE (policy, version) (also declared in 000034) already prevents
+-- duplicate versions, so dropping the single-row constraint loses nothing.
+ALTER TABLE policy_versions DROP CONSTRAINT IF EXISTS policy_versions_policy_key;

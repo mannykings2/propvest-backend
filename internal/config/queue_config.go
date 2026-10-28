@@ -19,11 +19,11 @@ type QueueConfig struct {
 	RetryDelayBase time.Duration `mapstructure:"QUEUE_RETRY_DELAY_BASE"` // Base delay for exponential backoff
 
 	// Consumer configuration
-	Concurrency    int `mapstructure:"QUEUE_CONSUMER_CONCURRENCY"`     // Concurrent message handlers per consumer
-	PrefetchCount  int `mapstructure:"QUEUE_PREFETCH_COUNT"`           // Messages to fetch at once
-	MaxLength      int `mapstructure:"QUEUE_MAX_LENGTH"`               // Maximum queue depth before backpressure
-	MessageTTL     int `mapstructure:"QUEUE_MESSAGE_TTL_HOURS"`        // Message TTL in hours (default 48h)
-	DLQMessageTTL  int `mapstructure:"QUEUE_DLQ_MESSAGE_TTL_DAYS"`     // DLQ message TTL in days (default 7d)
+	Concurrency   int `mapstructure:"QUEUE_CONSUMER_CONCURRENCY"` // Concurrent message handlers per consumer
+	PrefetchCount int `mapstructure:"QUEUE_PREFETCH_COUNT"`       // Messages to fetch at once
+	MaxLength     int `mapstructure:"QUEUE_MAX_LENGTH"`           // Maximum queue depth before backpressure
+	MessageTTL    int `mapstructure:"QUEUE_MESSAGE_TTL_HOURS"`    // Message TTL in hours (default 48h)
+	DLQMessageTTL int `mapstructure:"QUEUE_DLQ_MESSAGE_TTL_DAYS"` // DLQ message TTL in days (default 7d)
 
 	// Reconciliation
 	ReconciliationInterval      time.Duration `mapstructure:"QUEUE_RECONCILIATION_INTERVAL"`       // How often to run reconciliation (default 5m)
@@ -36,10 +36,10 @@ type QueueConfig struct {
 	CircuitBreakerTimeout   time.Duration `mapstructure:"QUEUE_CIRCUIT_BREAKER_TIMEOUT"`   // Time before attempting half-open (default 60s)
 
 	// Per-queue overrides (optional, use defaults if not set)
-	DepositConcurrency     int `mapstructure:"QUEUE_DEPOSIT_CONCURRENCY"`
-	WithdrawalConcurrency  int `mapstructure:"QUEUE_WITHDRAWAL_CONCURRENCY"`
+	DepositConcurrency      int `mapstructure:"QUEUE_DEPOSIT_CONCURRENCY"`
+	WithdrawalConcurrency   int `mapstructure:"QUEUE_WITHDRAWAL_CONCURRENCY"`
 	NotificationConcurrency int `mapstructure:"QUEUE_NOTIFICATION_CONCURRENCY"`
-	ReceiptConcurrency     int `mapstructure:"QUEUE_RECEIPT_CONCURRENCY"`
+	ReceiptConcurrency      int `mapstructure:"QUEUE_RECEIPT_CONCURRENCY"`
 }
 
 // LoadQueueConfig reads queue configuration from environment variables and

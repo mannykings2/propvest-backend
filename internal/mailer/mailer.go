@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/smtp"
+	"time"
 
 	"github.com/mannykings2/propvest-backend/internal/config"
 	"github.com/mannykings2/propvest-backend/internal/logger"
@@ -40,15 +41,51 @@ type Sender interface {
 
 // New returns the configured Sender. Defaults to the mock sender so the app
 // runs out of the box.
+//
+// config.Load() normalizes EMAIL_PROVIDER first ("brevo" and friends become
+// "smtp" once BREVO_SMTP_* is folded into SMTP_*), so "brevo" is accepted here
+// too as a belt-and-braces guard: an unrecognized provider name must never
+// silently select the mock — that is how delivery went missing entirely.
 func New(cfg *config.Config) Sender {
 	switch cfg.EmailProvider {
-	case "smtp":
-		logger.Info("email provider: SMTP", "host", cfg.SMTPHost, "port", cfg.SMTPPort)
+	case "smtp", "brevo":
+		if cfg.SMTPHost == "" {
+			logger.Error("email provider is SMTP but SMTP_HOST is empty; falling back to mock (emails will NOT be delivered)",
+				"provider", cfg.EmailProvider)
+			return &MockSender{}
+		}
+		logger.Info("email provider: SMTP", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "from", cfg.SMTPFromEmail)
 		return &SMTPSender{cfg: cfg}
 	default:
-		logger.Info("email provider: mock (emails logged to console)")
+		logger.Info("email provider: mock (emails logged to console)", "configured_provider", cfg.EmailProvider)
 		return &MockSender{}
 	}
+}
+
+// SendWithRetry delivers one email, retrying transient failures a bounded
+// number of times with a fixed delay.
+//
+// WHY BOUNDED: the queue consumer NACKs-and-requeues on error, so an
+// unbounded/hot retry loop would spin on a permanently rejected address (bad
+// recipient, provider outage) forever. Three in-process attempts, then give up
+// loudly — the message is ACKed and the payload is logged so an operator can
+// replay it.
+func SendWithRetry(s Sender, e Email, attempts int, delay time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for i := 1; i <= attempts; i++ {
+		if err = s.Send(e); err == nil {
+			return nil
+		}
+		if i < attempts {
+			logger.Warn("email send failed; retrying",
+				"attempt", i, "of", attempts, "to", e.To, "error", err)
+			time.Sleep(delay)
+		}
+	}
+	return err
 }
 
 // MockSender logs emails instead of sending them.

@@ -100,12 +100,20 @@ type Property struct {
 	// Stored as decimal: 15.50 means 15.5% total return
 	// NOT annualized unless specified in business logic
 	// Must be greater than zero (enforced by DB constraint)
-	ROIPercent float64 `gorm:"type:numeric(10,2);not null" json:"roi_percent"`
+	// column:roi_percent is explicit because GORM's default naming turns
+	// "ROIPercent" into "ro_ipercent", which silently fails to scan the real
+	// column out of every SELECT and returns 0.
+	ROIPercent float64 `gorm:"type:numeric(10,2);not null;column:roi_percent" json:"roi_percent"`
 
 	// DurationMonths is the investment period in months
 	// Example: 12 months, 24 months, etc.
 	// Must be greater than zero (enforced by DB constraint)
 	DurationMonths int `gorm:"not null" json:"duration_months"`
+
+	// HoldYears is the mandatory co-ownership hold before a co-owner may
+	// trigger a sale vote (business rule: rental properties hold 3 years).
+	// Added by migration 000025 to close a model/schema drift.
+	HoldYears int `gorm:"not null;default:3" json:"hold_years"`
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	// UNIT-BASED INVESTMENT

@@ -31,11 +31,39 @@ type Notification struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// TableName specifies the table name for GORM
+func (Notification) TableName() string {
+	return "notifications"
+}
+
+// IsUnread returns true if notification has not been read
+func (n *Notification) IsUnread() bool {
+	return !n.Read
+}
+
+// MarkAsRead marks the notification as read and sets ReadAt timestamp
+func (n *Notification) MarkAsRead() {
+	n.Read = true
+	now := time.Now()
+	n.ReadAt = &now
+}
+
 // Common notification type labels.
 const (
-	NotificationDepositSuccess    = "deposit_success"
-	NotificationWithdrawalUpdate  = "withdrawal_update"
-	NotificationInvestmentCreated = "investment_created"
-	NotificationPropertyApproved  = "property_approved"
-	NotificationWelcome           = "welcome"
+	NotificationDepositSuccess     = "deposit_success"
+	NotificationDepositFailed      = "deposit_failed"
+	NotificationWalletUpdate       = "wallet_update"
+	NotificationWithdrawalSuccess  = "withdrawal_success"
+	NotificationWithdrawalUpdate   = "withdrawal_update"
+	NotificationWithdrawalFailed   = "withdrawal_failed"
+	NotificationInvestmentCreated  = "investment_created"
+	NotificationInvestmentUpdate   = "investment_update"
+	NotificationInvestmentCancelled = "investment_cancelled"
+	NotificationInvestmentCompleted = "investment_completed"
+	NotificationPropertyApproved   = "property_approved"
+	NotificationPropertyRejected   = "property_rejected"
+	NotificationPropertyUpdate     = "property_update"
+	NotificationWelcome            = "welcome"
+	NotificationSecurityAlert      = "security_alert"
+	NotificationSystemUpdate       = "system_update"
 )

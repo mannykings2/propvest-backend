@@ -57,6 +57,13 @@ services:
     container_name: propvest_api
     env_file:
       - .env
+    # In-network overrides: .env targets localhost (native dev on the host), but
+    # inside a container localhost is the container itself. `environment:` beats
+    # env_file, so containers reach the compose services by service name.
+    environment:
+      DATABASE_URL: postgres://propvest:password@postgres:5432/propvest?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://propvest:password@rabbitmq:5672/
     ports:
       - "8081:8081"
     command: ["./api"]
@@ -67,6 +74,16 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    # Liveness probe (Phase 3.4): /health deliberately checks no dependencies
+    # so the container stays "healthy" across transient DB reconnects, while
+    # /health/ready (used by the deploy gate, not here) returns 503 when a real
+    # dependency is down. Alpine's busybox wget keeps the image unchanged.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   worker:
@@ -77,6 +94,11 @@ services:
     container_name: propvest_worker
     env_file:
       - .env
+    # Same in-network overrides as the api service (see above).
+    environment:
+      DATABASE_URL: postgres://propvest:password@postgres:5432/propvest?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://propvest:password@rabbitmq:5672/
     command: ["./worker"]
     depends_on:
       postgres:
@@ -85,6 +107,15 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    # The worker has no HTTP port, so the healthcheck watches the heartbeat
+    # file cmd/worker refreshes every 30s. If the file goes stale the container
+    # is reported unhealthy (restart: unless-stopped then recycles it).
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$(find /tmp/propvest-worker-heartbeat -mmin -2 2>/dev/null)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 volumes:

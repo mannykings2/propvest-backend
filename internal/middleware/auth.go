@@ -1,14 +1,26 @@
 package middleware
 
 import (
-	"strings"
+	"context"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/config"
+	"github.com/mannykings2/propvest-backend/internal/repositories"
 	"github.com/mannykings2/propvest-backend/internal/response"
 	"github.com/mannykings2/propvest-backend/internal/utils/jwt"
 )
+
+// AccountStore is the slice of the user repository the auth middleware needs:
+// it re-reads the account row on every authenticated request so that a
+// suspension, deletion or role change takes effect immediately instead of
+// whenever the current access token happens to expire (15 minutes).
+// repositories.UserRepository satisfies it.
+type AccountStore interface {
+	FindSessionState(ctx context.Context, id uuid.UUID) (*repositories.AccountState, error)
+}
 
 // Auth is middleware that validates JWT tokens and extracts user information
 //
@@ -21,7 +33,7 @@ import (
 //
 // Usage in routes:
 //   protected := router.Group("/api/v1/protected")
-//   protected.Use(middleware.Auth(cfg))
+//   protected.Use(middleware.Auth(cfg, userRepo))
 //   protected.GET("/profile", handler.GetProfile)  // Requires authentication
 //
 // Authorization header format:
@@ -33,7 +45,7 @@ import (
 //
 // Error responses:
 //   - 401 Unauthorized: Missing token, invalid format, expired, bad signature
-func Auth(cfg *config.Config) gin.HandlerFunc {
+func Auth(cfg *config.Config, accounts AccountStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Step 1: Extract Authorization header
 		// Standard format: "Authorization: Bearer <token>"
@@ -90,7 +102,27 @@ func Auth(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Step 6: Store user info in context
+		// Step 6: Re-read the account row (suspension / deletion / role check).
+		//
+		// WHY: JWTs are stateless — an admin can suspend an account, but the token
+		// already in that user's browser would otherwise keep working until `exp`.
+		// This one narrow lookup (indexed primary key, five columns) closes that
+		// window and also picks up role changes without forcing a re-login.
+		state, err := accounts.FindSessionState(c.Request.Context(), claims.UserID)
+		if err != nil {
+			// Not found = soft-deleted (or unknown id) → the token no longer names
+			// an account that exists.
+			response.Error(c, http.StatusUnauthorized, "Account no longer exists", "invalid_token")
+			c.Abort()
+			return
+		}
+		if state.Suspended || !state.IsActive {
+			response.Error(c, http.StatusUnauthorized, "Account has been suspended", "account_suspended")
+			c.Abort()
+			return
+		}
+
+		// Step 7: Store user info in context
 		// Handlers can now access these values with:
 		//   userID := c.GetString("user_id")
 		//   role := c.GetString("role")
@@ -98,10 +130,16 @@ func Auth(cfg *config.Config) gin.HandlerFunc {
 		// We store UUID as string because Gin context uses interface{}
 		// and UUID → interface{} → UUID requires type assertion
 		// String is simpler: string → interface{} → string works naturally
-		c.Set("user_id", claims.UserID.String())
-		c.Set("role", claims.Role)
+		//
+		// The role comes from the DATABASE, not the token claims: privilege
+		// changes apply to the next request instead of the next login.
+	c.Set("user_id", state.UserID.String())
+	c.Set("role", state.Role)
+	// Expose the row to downstream middleware (launch policy gates read
+	// email_verified / kyc_status from it without a second query).
+	c.Set("account_state", state)
 
-		// Step 7: Continue to next middleware or handler
+		// Step 8: Continue to next middleware or handler
 		// Request is authenticated, proceed with business logic
 		c.Next()
 	}

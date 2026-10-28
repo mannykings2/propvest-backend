@@ -9,6 +9,12 @@
 --   2. Replace 'YOUR-USER-ID-HERE' with actual UUID
 --   3. Run this script in your PostgreSQL client
 --
+-- NOTE: the ledger column is `external_reference` (migration 000007). An older
+-- revision of this script wrote `provider_reference`, which never existed and
+-- made the whole DO block fail with "column does not exist". It also wrote an
+-- `updated_at` column that wallet_transactions has never had, and omitted
+-- `user_id`, leaving the row unattributable in queries — both fixed here.
+--
 -- IMPORTANT: This is for TEST ENVIRONMENT ONLY!
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -50,6 +56,7 @@ BEGIN
     INSERT INTO wallet_transactions (
         id,
         wallet_id,
+        user_id,
         type,
         amount,
         balance_before,
@@ -57,12 +64,12 @@ BEGIN
         reference,
         description,
         status,
-        provider_reference,
-        created_at,
-        updated_at
+        external_reference,
+        created_at
     ) VALUES (
         gen_random_uuid(),
         v_wallet_id,
+        v_user_id,
         'deposit',
         v_amount_kobo,
         v_current_balance,
@@ -71,7 +78,6 @@ BEGIN
         'Manual test credit for withdrawal testing',
         'completed',
         'MANUAL-CREDIT',
-        NOW(),
         NOW()
     );
 

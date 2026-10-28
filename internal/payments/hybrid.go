@@ -49,6 +49,12 @@ func (h *HybridProvider) VerifyWebhookSignature(signature string, body []byte) b
 	return h.paystack.VerifyWebhookSignature(signature, body)
 }
 
+// FetchSettlements uses Paystack — settlements are real bank money, and the
+// mock side has no settlement feed.
+func (h *HybridProvider) FetchSettlements(ctx context.Context, from, to time.Time) ([]SettlementReport, error) {
+	return h.paystack.FetchSettlements(ctx, from, to)
+}
+
 // ResolveAccountNumber uses Mock (for withdrawal testing)
 func (h *HybridProvider) ResolveAccountNumber(ctx context.Context, accountNumber, bankCode string) (*AccountResolution, error) {
 	return h.mock.ResolveAccountNumber(ctx, accountNumber, bankCode)

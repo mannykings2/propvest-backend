@@ -53,10 +53,12 @@ type PaginationMetadata struct {
 
 // Success returns a successful response with optional data.
 //
-//	response.Success(c, data)                 // 200 OK with data
-//	response.Success(c, http.StatusOK, data)  // explicit status with data
+//	response.Success(c, data)                                // 200 OK with data
+//	response.Success(c, http.StatusOK, data)                 // explicit status with data
+//	response.Success(c, http.StatusOK, "message", data)       // status + message + data
 func Success(c *gin.Context, args ...interface{}) {
 	statusCode := http.StatusOK
+	message := ""
 	var data interface{}
 
 	switch len(args) {
@@ -69,10 +71,21 @@ func Success(c *gin.Context, args ...interface{}) {
 		} else {
 			data = args[0]
 		}
+	case 3:
+		if code, ok := args[0].(int); ok {
+			statusCode = code
+			if msg, ok := args[1].(string); ok {
+				message = msg
+			}
+			data = args[2]
+		} else {
+			data = args[0]
+		}
 	}
 
 	c.JSON(statusCode, StandardResponse{
 		Success:   true,
+		Message:   message,
 		Data:      data,
 		RequestID: c.GetString("request_id"),
 	})
@@ -168,12 +181,44 @@ func Error(c *gin.Context, args ...interface{}) {
 		}
 	}
 
+	// A caller that passes only a status gets a code that matches it. Without
+	// this, every 4xx built from the 2-arg form reported "internal_error", which
+	// tells a client nothing (and lies about the class of failure).
+	if code == "internal_error" && statusCode < 500 {
+		code = defaultCodeForStatus(statusCode)
+	}
+
 	c.JSON(statusCode, StandardResponse{
 		Success:   false,
 		Message:   message,
 		Code:      code,
 		RequestID: c.GetString("request_id"),
 	})
+}
+
+// defaultCodeForStatus gives a 4xx response a machine-readable code when the
+// caller didn't supply one. Unmapped statuses keep "internal_error".
+func defaultCodeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusTooManyRequests:
+		return "rate_limited"
+	case http.StatusUnprocessableEntity:
+		return "validation_error"
+	case http.StatusServiceUnavailable:
+		return "service_unavailable"
+	default:
+		return "internal_error"
+	}
 }
 
 // ErrorWithStatus returns an error response with an explicit status code,

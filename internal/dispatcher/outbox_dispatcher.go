@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -26,8 +27,9 @@ import (
 //   - Graceful shutdown support
 //
 // Multiple Instances:
-//   You can run multiple dispatcher instances for high availability and throughput.
-//   The FOR UPDATE SKIP LOCKED ensures they don't process the same events.
+//
+//	You can run multiple dispatcher instances for high availability and throughput.
+//	The FOR UPDATE SKIP LOCKED ensures they don't process the same events.
 //
 // Usage:
 //
@@ -111,8 +113,8 @@ func NewOutboxDispatcherWithConfig(
 // Start begins the dispatcher background loops.
 //
 // This starts two goroutines:
-//   1. pollLoop: Polls for pending events and publishes them
-//   2. recoveryLoop: Recovers stale events from crashed dispatchers
+//  1. pollLoop: Polls for pending events and publishes them
+//  2. recoveryLoop: Recovers stale events from crashed dispatchers
 //
 // Call Stop() to gracefully shut down.
 func (d *OutboxDispatcher) Start(ctx context.Context) {
@@ -206,13 +208,20 @@ func (d *OutboxDispatcher) processEvent(ctx context.Context, event *models.Outbo
 	// Map event type to queue name
 	queueName := d.getQueueName(event.EventType)
 	if queueName == "" {
-		return fmt.Errorf("unknown event type: %s", event.EventType)
+		return fmt.Errorf("%w: %s", errUnknownEventType, event.EventType)
 	}
 
 	// Unmarshal payload to generic map for RabbitMQ
 	var payload map[string]interface{}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
+
+	// The shared business queue carries several event types, so the type travels
+	// with the payload. (Consumers of the other queues unmarshal into structs
+	// and would ignore it, which is why it is only added here.)
+	if queueName == queue.QueueBusinessEvents {
+		payload["event_type"] = event.EventType
 	}
 
 	// Publish to RabbitMQ
@@ -233,6 +242,19 @@ func (d *OutboxDispatcher) processEvent(ctx context.Context, event *models.Outbo
 // handleFailure decides whether to retry or permanently fail an event.
 func (d *OutboxDispatcher) handleFailure(ctx context.Context, event *models.OutboxEvent, publishErr error) {
 	log := logger.FromContext(ctx)
+
+	// Unroutable event types can never succeed — no point waiting an hour to
+	// find out. Fail immediately so the backlog drains and the reason is stored.
+	if isUnknownEventType(publishErr) {
+		log.Error("event type has no queue; marking failed",
+			"event_id", event.ID,
+			"event_type", event.EventType,
+			"error", publishErr)
+		if err := d.outboxRepo.MarkFailed(ctx, event.ID, publishErr.Error()); err != nil {
+			log.Error("failed to mark event as failed", "event_id", event.ID, "error", err)
+		}
+		return
+	}
 
 	// Check if max retries exceeded
 	if event.Attempts+1 >= d.maxRetries {
@@ -286,6 +308,12 @@ func (d *OutboxDispatcher) calculateBackoff(attempts int) time.Duration {
 }
 
 // getQueueName maps event types to RabbitMQ queue names.
+//
+// Business events (investment/property lifecycle) share one queue; the worker's
+// business-event dispatcher reads the injected `event_type` to decide what to
+// do with each. Returning an empty name means "nobody can ever handle this" —
+// processEvent turns that into errUnknownEventType so it fails permanently
+// instead of retrying for an hour.
 func (d *OutboxDispatcher) getQueueName(eventType string) string {
 	mapping := map[string]string{
 		models.EventTypeWithdrawalProcess: queue.QueueWithdrawalProcess,
@@ -293,8 +321,25 @@ func (d *OutboxDispatcher) getQueueName(eventType string) string {
 		models.EventTypeEmailDispatch:     queue.QueueEmailDispatch,
 		models.EventTypeSMSDispatch:       queue.QueueSMSDispatch,
 		models.EventTypeRealtimePush:      queue.QueueRealtimePush,
+
+		models.EventTypeInvestmentCreated:   queue.QueueBusinessEvents,
+		models.EventTypeInvestmentCancelled: queue.QueueBusinessEvents,
+		models.EventTypeInvestmentCompleted: queue.QueueBusinessEvents,
+		models.EventTypePropertyPublished:   queue.QueueBusinessEvents,
+		models.EventTypePropertyFunded:      queue.QueueBusinessEvents,
+		models.EventTypePropertyCompleted:   queue.QueueBusinessEvents,
 	}
 	return mapping[eventType]
+}
+
+// errUnknownEventType marks an event type that no queue/consumer can ever
+// handle. Retrying it is pointless (the map is static), so handleFailure fails
+// it immediately instead of burning 10 exponential attempts over an hour.
+var errUnknownEventType = errors.New("unknown event type")
+
+// isUnknownEventType reports whether err was caused by an unroutable type.
+func isUnknownEventType(err error) bool {
+	return errors.Is(err, errUnknownEventType)
 }
 
 // recoveryLoop periodically recovers stale events from crashed dispatchers.

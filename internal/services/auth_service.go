@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	stderrors "errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 	"github.com/mannykings2/propvest-backend/internal/utils/jwt"
 	"github.com/mannykings2/propvest-backend/internal/utils/password"
+	"github.com/mannykings2/propvest-backend/internal/utils/token"
 	"github.com/mannykings2/propvest-backend/internal/validators"
 	"gorm.io/gorm"
 )
@@ -114,6 +116,38 @@ func NewAuthService(
 	}
 }
 
+// recordRegistrationConsents appends the signup consent evidence inside the
+// registration transaction: the version-pinned terms + privacy acceptance and
+// the SEPARATE marketing opt-in/out decision, stamped with the request's
+// IP/user-agent from the context metadata.
+//
+// Only decisions the client actually sent are recorded: with enforcement off
+// (development) the flags may be absent, and inventing a "granted" row would
+// be perjury, not evidence.
+func (s *authService) recordRegistrationConsents(ctx context.Context, tx *gorm.DB, userID uuid.UUID, req dto.RegisterRequest) error {
+	if !req.AcceptTerms && !req.AcceptPrivacyPolicy && !req.MarketingConsent {
+		return nil
+	}
+	versions, err := CurrentPolicyVersions(ctx, tx)
+	if err != nil {
+		return err
+	}
+	md := RequestMetadataFromContext(ctx)
+	if req.AcceptPrivacyPolicy {
+		v := versions[models.ConsentPurposePrivacyPolicy]
+		if err := RecordConsent(ctx, tx, userID, models.ConsentPurposePrivacyPolicy, true, &v, md.IPAddress, md.UserAgent); err != nil {
+			return err
+		}
+	}
+	if req.AcceptTerms {
+		v := versions[models.ConsentPurposeTerms]
+		if err := RecordConsent(ctx, tx, userID, models.ConsentPurposeTerms, true, &v, md.IPAddress, md.UserAgent); err != nil {
+			return err
+		}
+	}
+	return RecordConsent(ctx, tx, userID, models.ConsentPurposeMarketing, req.MarketingConsent, nil, md.IPAddress, md.UserAgent)
+}
+
 // Register creates a new user account
 //
 // Process:
@@ -189,6 +223,13 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 		return nil, err
 	}
 
+	// Phase 9.1 (NDPA): in production, signup must accept the terms and the
+	// privacy policy. Marketing consent is deliberately NOT required — bundling
+	// it with contract-required processing would make it not "freely given".
+	if s.config != nil && s.config.RequireRegistrationConsent && (!req.AcceptTerms || !req.AcceptPrivacyPolicy) {
+		return nil, fmt.Errorf("%w: accepting the terms of service and privacy policy is required", errors.ErrValidation)
+	}
+
 	// Step 4: Hash the password
 	// bcrypt.GenerateFromPassword is expensive (intentionally slow for security)
 	// Cost 10 = ~100ms on modern hardware
@@ -242,6 +283,12 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 
 		if err := tx.Create(wallet).Error; err != nil {
 			return err // Triggers rollback (user creation is undone)
+		}
+
+		// Phase 9.1: consent evidence commits ATOMICALLY with the account it
+		// describes — a user row without its consent rows must be impossible.
+		if err := s.recordRegistrationConsents(ctx, tx, user.ID, req); err != nil {
+			return err
 		}
 
 		// Both operations succeeded
@@ -546,6 +593,15 @@ func (s *authService) RefreshAccessToken(ctx context.Context, req dto.RefreshReq
 	if err := s.refreshTokenRepo.Create(ctx, refreshTokenModel); err != nil {
 		// Token storage failed. The old token is already revoked, so the safest
 		// outcome is to fail the refresh (FIX-03: log + error, was silently swallowed).
+		//
+		// A unique-constraint violation means the rotation was replayed or raced
+		// (the minted token already exists in the ledger): that is a credential
+		// problem, not a server fault, so it answers 401 and lets the client fall
+		// back to a fresh login instead of surfacing a 5xx.
+		if isUniqueViolation(err) {
+			logger.Warn("refresh: rotation collision, rejecting refresh token", "user_id", claims.UserID, "error", err)
+			return nil, errors.ErrInvalidToken
+		}
 		logger.Error("refresh: failed to store rotated refresh token", "user_id", claims.UserID, "error", err)
 		return nil, errors.ErrInternalServer
 	}
@@ -704,66 +760,212 @@ func translatePgUniqueViolation(err error) error {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // VerifyEmail consumes an email-verification token and marks the user verified.
+//
+// Token lifecycle: single-use, expiring, stored only as a SHA-256 hash. A
+// mismatched/expired/used token maps to a dedicated error so the frontend can
+// distinguish "resend" from "try again".
 func (s *authService) VerifyEmail(ctx context.Context, token string) error {
-	// TODO: Implement email verification logic
-	// 1. Validate token format
-	// 2. Look up token in verification_tokens table
-	// 3. Check if token is expired
-	// 4. Mark user's email as verified
-	// 5. Delete/invalidate the token
-	logger.Info("VerifyEmail not yet implemented", "token", token)
-	return errors.ErrNotImplemented
+	if strings.TrimSpace(token) == "" {
+		return errors.ErrTokenInvalid
+	}
+
+	vt, err := s.tokenRepo.FindByHash(ctx, hashToken(token))
+	if err != nil {
+		// Record not found (or any lookup failure) → same client-facing error.
+		return errors.ErrTokenInvalid
+	}
+	if vt.Purpose != models.PurposeEmailVerification {
+		return errors.ErrTokenInvalid
+	}
+	if vt.UsedAt != nil {
+		return errors.ErrTokenUsed
+	}
+	if !vt.IsUsable() {
+		return errors.ErrTokenExpired
+	}
+
+	// Mark the user's email as verified (idempotent).
+	if err := s.userRepo.UpdatePartial(ctx, vt.UserID, map[string]interface{}{"email_verified": true}); err != nil {
+		logger.Error("verify-email: failed to update user", "user_id", vt.UserID, "error", err)
+		return errors.ErrInternalServer
+	}
+
+	// Burn the token so it can't be replayed.
+	if err := s.tokenRepo.MarkUsed(ctx, vt.ID); err != nil {
+		logger.Error("verify-email: failed to mark token used", "token_id", vt.ID, "error", err)
+	}
+
+	logger.Info("email verified", "user_id", vt.UserID)
+	return nil
 }
 
-// ResendVerification issues a fresh verification email (invalidating prior ones).
+// ResendVerification issues a fresh verification email, invalidating any prior
+// unused tokens so only the newest link works.
 func (s *authService) ResendVerification(ctx context.Context, email string) error {
-	// TODO: Implement resend verification logic
-	// 1. Find user by email
-	// 2. Check if already verified
-	// 3. Invalidate old tokens
-	// 4. Generate new token
-	// 5. Send verification email
-	logger.Info("ResendVerification not yet implemented", "email", email)
-	return errors.ErrNotImplemented
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if normalized == "" {
+		return errors.ErrInvalidEmail
+	}
+
+	user, err := s.userRepo.FindByEmail(ctx, normalized)
+	if err != nil {
+		// Unknown email: report success to avoid account enumeration; the user
+		// simply won't receive anything.
+		logger.Warn("resend-verification for unknown email", "email", normalized)
+		return nil
+	}
+	if user.EmailVerified {
+		return nil // already verified — nothing to do, and don't leak state
+	}
+
+	s.issueVerificationEmail(ctx, user)
+	return nil
 }
 
 // ForgotPassword starts the reset flow by emailing a reset link.
 // Always returns nil (we never reveal whether an email is registered).
 func (s *authService) ForgotPassword(ctx context.Context, email string) error {
-	// TODO: Implement forgot password logic
-	// 1. Find user by email (silently fail if not found)
-	// 2. Generate password reset token
-	// 3. Store token with expiration
-	// 4. Send reset email with token link
-	// Always return nil to prevent email enumeration
-	logger.Info("ForgotPassword not yet implemented", "email", email)
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if normalized == "" {
+		return nil // never leak validity either
+	}
+
+	user, err := s.userRepo.FindByEmail(ctx, normalized)
+	if err != nil {
+		logger.Warn("forgot-password for unknown email", "email", normalized)
+		return nil // always return nil for security
+	}
+
+	// Invalidate prior unused reset tokens so only the newest link works.
+	if err := s.tokenRepo.InvalidateActive(ctx, user.ID, models.PurposePasswordReset); err != nil {
+		logger.Error("forgot-password: failed to invalidate old tokens", "user_id", user.ID, "error", err)
+	}
+
+	plain, err := token.GenerateRandomToken(32)
+	if err != nil {
+		logger.Error("forgot-password: token generation failed", "error", err)
+		return nil // still don't leak
+	}
+
+	vt := &models.VerificationToken{
+		UserID:    user.ID,
+		TokenHash: hashToken(plain),
+		Purpose:   models.PurposePasswordReset,
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+	}
+	if err := s.tokenRepo.Create(ctx, vt); err != nil {
+		logger.Error("forgot-password: failed to store token", "user_id", user.ID, "error", err)
+		return nil
+	}
+
+	resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.config.BaseURL, plain)
+	body := fmt.Sprintf("Hello %s,\n\nUse the link below to reset your password. It expires in 30 minutes and can only be used once:\n\n%s\n\nIf you didn't request this, you can safely ignore this email.",
+		user.FullName, resetURL)
+	if err := s.mailer.Send(mailer.Email{
+		To:       user.Email,
+		Subject:  "Reset your PropVest password",
+		TextBody: body,
+		HTMLBody: body,
+	}); err != nil {
+		logger.Error("forgot-password: failed to send email", "user_id", user.ID, "error", err)
+	}
+
+	logger.Info("password reset email sent", "user_id", user.ID)
 	return nil // Always return nil for security
 }
 
-// ResetPassword consumes a reset token, sets the new password, and revokes
-// all of the user's sessions.
-func (s *authService) ResetPassword(ctx context.Context, token, newPassword string) error {
-	// TODO: Implement reset password logic
-	// 1. Validate token
-	// 2. Look up token in verification_tokens table
-	// 3. Check if token is expired
-	// 4. Validate new password complexity
-	// 5. Hash new password
-	// 6. Update user's password
-	// 7. Revoke all refresh tokens (force logout everywhere)
-	// 8. Invalidate the reset token
-	logger.Info("ResetPassword not yet implemented", "token", token)
-	return errors.ErrNotImplemented
+// ResetPassword consumes a reset token, sets the new password, and revokes all
+// of the user's sessions (fail-closed: if revocation fails, the reset fails).
+func (s *authService) ResetPassword(ctx context.Context, tokenStr, newPassword string) error {
+	if strings.TrimSpace(tokenStr) == "" {
+		return errors.ErrTokenInvalid
+	}
+
+	vt, err := s.tokenRepo.FindByHash(ctx, hashToken(tokenStr))
+	if err != nil {
+		return errors.ErrTokenInvalid
+	}
+	if vt.Purpose != models.PurposePasswordReset {
+		return errors.ErrTokenInvalid
+	}
+	if vt.UsedAt != nil {
+		return errors.ErrTokenUsed
+	}
+	if !vt.IsUsable() {
+		return errors.ErrTokenExpired
+	}
+
+	// Validate complexity before touching anything.
+	if err := validators.ValidatePasswordComplexity(newPassword); err != nil {
+		return err
+	}
+
+	hashed, err := password.Hash(newPassword)
+	if err != nil {
+		return errors.ErrInternalServer
+	}
+
+	// Update the password and burn the token atomically; sessions are revoked
+	// right after so a stolen refresh token can't survive the reset.
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if uerr := tx.Model(&models.User{}).Where("id = ?", vt.UserID).
+			Update("password_hash", hashed).Error; uerr != nil {
+			return uerr
+		}
+		return tx.Model(&models.VerificationToken{}).Where("id = ?", vt.ID).
+			Update("used_at", time.Now()).Error
+	}); err != nil {
+		logger.Error("reset-password: transaction failed", "user_id", vt.UserID, "error", err)
+		return errors.ErrInternalServer
+	}
+
+	// Force re-login everywhere. Security-critical: fail closed.
+	if err := s.refreshTokenRepo.RevokeAllByUserID(ctx, vt.UserID); err != nil {
+		logger.Error("reset-password: failed to revoke sessions", "user_id", vt.UserID, "error", err)
+		return errors.ErrInternalServer
+	}
+
+	logger.Info("password reset complete", "user_id", vt.UserID)
+	return nil
 }
 
 // issueVerificationEmail is a helper that generates a verification token and
 // sends it to the user. This is best-effort and should not fail registration.
 func (s *authService) issueVerificationEmail(ctx context.Context, user *models.User) {
-	// TODO: Implement verification email sending
-	// 1. Generate secure random token
-	// 2. Store token in verification_tokens table with expiration
-	// 3. Build verification URL with token
-	// 4. Send email via mailer service
-	// Log errors but don't propagate (registration already succeeded)
-	logger.Info("issueVerificationEmail not yet implemented", "user_id", user.ID, "email", user.Email)
+	// Invalidate prior unused tokens so only the newest link works.
+	if err := s.tokenRepo.InvalidateActive(ctx, user.ID, models.PurposeEmailVerification); err != nil {
+		logger.Error("issue-verification: failed to invalidate old tokens", "user_id", user.ID, "error", err)
+	}
+
+	plain, err := token.GenerateRandomToken(32)
+	if err != nil {
+		logger.Error("issue-verification: token generation failed", "error", err)
+		return
+	}
+
+	vt := &models.VerificationToken{
+		UserID:    user.ID,
+		TokenHash: hashToken(plain),
+		Purpose:   models.PurposeEmailVerification,
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+	if err := s.tokenRepo.Create(ctx, vt); err != nil {
+		logger.Error("issue-verification: failed to store token", "user_id", user.ID, "error", err)
+		return
+	}
+
+	verifyURL := fmt.Sprintf("%s/verify-email?token=%s", s.config.BaseURL, plain)
+	body := fmt.Sprintf("Hello %s,\n\nConfirm your email address by opening the link below (valid for 24 hours):\n\n%s\n\nIf you didn't create a PropVest account, you can safely ignore this email.",
+		user.FullName, verifyURL)
+	if err := s.mailer.Send(mailer.Email{
+		To:       user.Email,
+		Subject:  "Verify your PropVest email",
+		TextBody: body,
+		HTMLBody: body,
+	}); err != nil {
+		logger.Error("issue-verification: failed to send email", "user_id", user.ID, "error", err)
+		return
+	}
+
+	logger.Info("verification email sent", "user_id", user.ID, "email", user.Email)
 }

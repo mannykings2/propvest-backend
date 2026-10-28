@@ -29,7 +29,8 @@ import (
 //   1. investor   - Can invest, manage portfolio, fund wallet
 //   2. developer  - Can create properties, upload documents
 //   3. staff      - Can view reports, assist users (future)
-//   4. admin      - Can do everything
+//   4. admin      - Can manage users, approve properties, view analytics
+//   5. super_admin - Can manage admins, change roles, access all features (Milestone 7)
 //
 // Parameters:
 //   - allowedRoles: One or more role strings
@@ -91,7 +92,16 @@ func RequireDeveloper() gin.HandlerFunc {
 // RequireAdmin is a convenience wrapper for RequireRole("admin")
 // Only admins can access
 func RequireAdmin() gin.HandlerFunc {
-	return RequireRole("admin")
+	return RequireRole("admin", "super_admin")
+}
+
+// RequireSuperAdmin requires super_admin role specifically
+// Used for highly privileged operations:
+//   - Role changes (promoting users to admin)
+//   - Managing other admin accounts
+//   - Platform-wide configuration changes
+func RequireSuperAdmin() gin.HandlerFunc {
+	return RequireRole("super_admin")
 }
 
 // RequireAdminOrStaff allows both admin and staff roles

@@ -112,9 +112,13 @@ type WalletTransaction struct {
 	// IdempotencyKey is the client-supplied key that prevents duplicate creation
 	// on retries. Unique when present.
 	IdempotencyKey *string `gorm:"uniqueIndex" json:"idempotency_key,omitempty"`
-	Description    string  `json:"description"`
-	// Status: pending|processing|completed|failed|reversed
+	Description    string  `json:"description"`	// Status: pending|processing|completed|failed|reversed
 	Status string `gorm:"default:'completed'" json:"status"`
+	// Phase 7: the withdrawal fee (1% capped at ₦2,000) and the net payout,
+	// frozen at initiation so a later fee-rule edit can't change an in-flight
+	// withdrawal. FeeKobo books to 3000 fee revenue at finalization.
+	FeeKobo int64 `gorm:"not null;default:0" json:"fee_kobo"`
+	NetKobo int64 `gorm:"not null;default:0" json:"net_kobo"`
 	// Metadata is free-form JSON for provider payloads / extra context.
 	Metadata  datatypes.JSON `gorm:"type:jsonb" json:"metadata,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`

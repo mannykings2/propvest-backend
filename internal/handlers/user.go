@@ -153,6 +153,52 @@ func (h *UserHandler) VerifyPhoneChange(c *gin.Context) {
 	response.SuccessWithMessage(c, http.StatusOK, "Phone number updated successfully", user)
 }
 
+// SubmitKYC handles POST /api/v1/me/kyc/submit
+//
+// NOTE: registered at the router ROOT (not under /users) because the frontend
+// posts to /api/v1/me/kyc/submit exactly. Records the submission (upserts the
+// user's single row) and sets kyc_status to 'pending' for admin review.
+func (h *UserHandler) SubmitKYC(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req dto.SubmitKYCRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	result, err := h.userService.SubmitKYC(c.Request.Context(), userID, req)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "KYC submitted for review", result)
+}
+
+// GetKYCStatus handles GET /api/v1/me/kyc
+//
+// Returns the caller's current KYC submission state (PII-safe: last-4 only).
+func (h *UserHandler) GetKYCStatus(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	result, err := h.userService.GetKYCStatus(c.Request.Context(), userID)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	response.Success(c, result)
+}
+
 // handleError maps service errors to HTTP responses
 func (h *UserHandler) handleError(c *gin.Context, err error) {
 	response.Error(c, err)

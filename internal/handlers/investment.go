@@ -72,8 +72,8 @@ func NewInvestmentHandler(investmentService services.InvestmentService) *Investm
 //   - 500: Internal server error
 func (h *InvestmentHandler) CreateInvestment(c *gin.Context) {
 	// Extract user ID from JWT context (set by auth middleware)
-	userID, exists := c.Get("user_id")
-	if !exists {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
 		response.Error(c, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
@@ -86,7 +86,7 @@ func (h *InvestmentHandler) CreateInvestment(c *gin.Context) {
 	}
 
 	// Call service layer
-	investment, err := h.investmentService.CreateInvestment(c.Request.Context(), userID.(uuid.UUID), req)
+	investment, err := h.investmentService.CreateInvestment(c.Request.Context(), userID, req)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -115,8 +115,8 @@ func (h *InvestmentHandler) CreateInvestment(c *gin.Context) {
 //   - 500: Internal server error
 func (h *InvestmentHandler) GetInvestment(c *gin.Context) {
 	// Extract user ID from context
-	userID, exists := c.Get("user_id")
-	if !exists {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
 		response.Error(c, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
@@ -133,7 +133,7 @@ func (h *InvestmentHandler) GetInvestment(c *gin.Context) {
 	}
 
 	// Call service layer
-	investment, err := h.investmentService.GetInvestment(c.Request.Context(), userID.(uuid.UUID), investmentID, isAdmin)
+	investment, err := h.investmentService.GetInvestment(c.Request.Context(), userID, investmentID, isAdmin)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -170,8 +170,8 @@ func (h *InvestmentHandler) GetInvestment(c *gin.Context) {
 //   }
 func (h *InvestmentHandler) ListMyInvestments(c *gin.Context) {
 	// Extract user ID from context
-	userID, exists := c.Get("user_id")
-	if !exists {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
 		response.Error(c, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
@@ -193,7 +193,7 @@ func (h *InvestmentHandler) ListMyInvestments(c *gin.Context) {
 	offset := (page - 1) * pageSize
 
 	// Call service layer
-	investments, total, err := h.investmentService.ListUserInvestments(c.Request.Context(), userID.(uuid.UUID), limit, offset)
+	investments, total, err := h.investmentService.ListUserInvestments(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -230,14 +230,14 @@ func (h *InvestmentHandler) ListMyInvestments(c *gin.Context) {
 //   }
 func (h *InvestmentHandler) GetPortfolioSummary(c *gin.Context) {
 	// Extract user ID from context
-	userID, exists := c.Get("user_id")
-	if !exists {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
 		response.Error(c, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	// Call service layer
-	summary, err := h.investmentService.GetPortfolioSummary(c.Request.Context(), userID.(uuid.UUID))
+	summary, err := h.investmentService.GetPortfolioSummary(c.Request.Context(), userID)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -374,24 +374,6 @@ func (h *InvestmentHandler) ListPropertyInvestments(c *gin.Context) {
 //
 // Returns platform-wide investment statistics.
 // Protected route - requires admin role.
-//
-// Success response (200 OK):
-//   {
-//     "success": true,
-//     "message": "Investment metrics retrieved successfully",
-//     "data": {
-//       "total_investments": 1250,
-//       "total_amount_kobo": 125000000000,
-//       "total_amount_naira": 1250000000.00,
-//       "active_investments": 1000,
-//       "completed_investments": 200,
-//       "cancelled_investments": 30,
-//       "refunded_investments": 20,
-//       "unique_investors": 450,
-//       "average_investment_kobo": 100000000,
-//       "average_investment_naira": 1000000.00
-//     }
-//   }
 func (h *InvestmentHandler) GetInvestmentMetrics(c *gin.Context) {
 	// Call service layer
 	metrics, err := h.investmentService.GetInvestmentMetrics(c.Request.Context())
@@ -402,5 +384,100 @@ func (h *InvestmentHandler) GetInvestmentMetrics(c *gin.Context) {
 
 	// Success response
 	response.Success(c, http.StatusOK, "Investment metrics retrieved successfully", metrics)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SALE VOTE ENDPOINTS (Phase 2, Workstream A3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TriggerSaleVote handles POST /api/v1/investments/:id/trigger-sale
+//
+// Opens a sale-vote campaign for the property behind the investment. Requires
+// the hold period to have elapsed. Co-owners are notified in-app.
+//
+// Success (200): { campaign_id, status: "open", electors, for_count, ... }
+// Errors: 403 hold not elapsed · 409 campaign already open · 404 not found
+func (h *InvestmentHandler) TriggerSaleVote(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	investmentID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid investment ID format")
+		return
+	}
+
+	state, err := h.investmentService.TriggerSaleVote(c.Request.Context(), userID, investmentID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "Sale vote triggered", state)
+}
+
+// CastVote handles POST /api/v1/investments/:id/vote
+//
+// Records the caller's vote on the open campaign. The campaign is closed
+// automatically once a strict majority (>50% of electors) is reached or all
+// electors have voted.
+//
+// Request body: { "vote": "for" | "against" }
+// Errors: 404 no open campaign · 409 already voted · 403 not an investor
+func (h *InvestmentHandler) CastVote(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	investmentID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid investment ID format")
+		return
+	}
+
+	var req dto.CastVoteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err)
+		return
+	}
+
+	state, err := h.investmentService.CastVote(c.Request.Context(), userID, investmentID, req.Vote)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.SuccessWithMessage(c, http.StatusOK, "Vote recorded", state)
+}
+
+// GetVoteState handles GET /api/v1/investments/:id/vote
+//
+// Returns the live campaign tally for the investment (or trigger eligibility
+// when no campaign is open).
+func (h *InvestmentHandler) GetVoteState(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		response.Error(c, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	investmentID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid investment ID format")
+		return
+	}
+
+	state, err := h.investmentService.GetVoteState(c.Request.Context(), userID, investmentID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.Success(c, state)
 }
 

@@ -33,7 +33,9 @@ type RefreshTokenRepository interface {
 
 	// RevokeAllByUserID marks all user's tokens as revoked (logout all devices)
 	// Called when: password changed, account suspended, user requests logout everywhere
-	RevokeAllByUserID(ctx context.Context, userID uuid.UUID) error
+	// Pass an optional transaction handle to revoke atomically with a related
+	// change (e.g. suspending the user and killing their sessions in one commit).
+	RevokeAllByUserID(ctx context.Context, userID uuid.UUID, txs ...*gorm.DB) error
 
 	// DeleteExpired removes expired tokens from the database
 	// This is called by a background job to clean up old data
@@ -261,7 +263,7 @@ func (r *refreshTokenRepository) RevokeByTokenHash(ctx context.Context, tokenHas
 //   // Revoke all sessions
 //   repo.RevokeAllByUserID(ctx, user.ID)
 //   // User must login again with new password
-func (r *refreshTokenRepository) RevokeAllByUserID(ctx context.Context, userID uuid.UUID) error {
+func (r *refreshTokenRepository) RevokeAllByUserID(ctx context.Context, userID uuid.UUID, txs ...*gorm.DB) error {
 	// Generated SQL:
 	//   UPDATE refresh_tokens
 	//   SET revoked_at = NOW(), updated_at = NOW()
@@ -270,7 +272,11 @@ func (r *refreshTokenRepository) RevokeAllByUserID(ctx context.Context, userID u
 	//     AND deleted_at IS NULL
 	//
 	// We only update tokens that aren't already revoked (efficiency)
-	return r.WithContext(ctx).
+	q := r.db
+	if len(txs) > 0 && txs[0] != nil {
+		q = txs[0]
+	}
+	return q.WithContext(ctx).
 		Model(&models.RefreshToken{}).
 		Where("user_id = ?", userID).
 		Where("revoked_at IS NULL").  // Only update active tokens

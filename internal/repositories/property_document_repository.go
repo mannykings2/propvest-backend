@@ -2,7 +2,6 @@ package repositories
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/models"
@@ -17,7 +16,6 @@ import (
 // KEY RESPONSIBILITIES:
 //   - Managing property documents (certificates, agreements, reports, etc.)
 //   - Controlling document visibility (public vs private)
-//   - Maintaining display order
 //   - Supporting cascading operations with property deletion
 type PropertyDocumentRepository interface {
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -28,7 +26,8 @@ type PropertyDocumentRepository interface {
 	// MUST be called within a transaction when part of a larger operation.
 	Create(ctx context.Context, document *models.PropertyDocument, tx *gorm.DB) error
 
-	// FindByPropertyID retrieves all documents for a property, ordered by display_order.
+	// FindByPropertyID retrieves all documents for a property, ordered by
+	// created_at ascending (the schema has no display order column).
 	// If publicOnly is true, only returns documents where is_public = true.
 	// If publicOnly is false, returns all documents (admin view).
 	FindByPropertyID(ctx context.Context, propertyID uuid.UUID, publicOnly bool) ([]models.PropertyDocument, error)
@@ -38,7 +37,7 @@ type PropertyDocumentRepository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*models.PropertyDocument, error)
 
 	// Update saves changes to an existing document.
-	// Used for updating metadata, visibility, or display order.
+	// Used for updating metadata or visibility.
 	Update(ctx context.Context, document *models.PropertyDocument, tx *gorm.DB) error
 
 	// Delete removes a document from the database.
@@ -56,19 +55,6 @@ type PropertyDocumentRepository interface {
 	// CountPublicDocuments returns the number of public documents for a property.
 	// Useful for displaying "X documents available" on property listings.
 	CountPublicDocuments(ctx context.Context, propertyID uuid.UUID) (int64, error)
-
-	// ═══════════════════════════════════════════════════════════════════════════
-	// DISPLAY ORDER MANAGEMENT
-	// ═══════════════════════════════════════════════════════════════════════════
-
-	// UpdateDisplayOrder updates the display_order field for a document.
-	// Used for manual reordering of documents in the admin panel.
-	UpdateDisplayOrder(ctx context.Context, documentID uuid.UUID, displayOrder int, tx *gorm.DB) error
-
-	// GetNextDisplayOrder returns the next available display order for a property.
-	// Used when adding a new document without specifying order.
-	// Returns max(display_order) + 1, or 0 if no documents exist.
-	GetNextDisplayOrder(ctx context.Context, propertyID uuid.UUID) (int, error)
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	// TYPE-BASED QUERIES
@@ -102,7 +88,9 @@ func (r *propertyDocumentRepository) Create(ctx context.Context, document *model
 	return db.WithContext(ctx).Create(document).Error
 }
 
-// FindByPropertyID retrieves all documents for a property, ordered by display_order.
+// FindByPropertyID retrieves all documents for a property, ordered by
+// created_at ascending. property_documents has no display_order column (see
+// migration 000018), so creation order is the only ordering available.
 func (r *propertyDocumentRepository) FindByPropertyID(ctx context.Context, propertyID uuid.UUID, publicOnly bool) ([]models.PropertyDocument, error) {
 	query := r.WithContext(ctx).
 		Where("property_id = ?", propertyID)
@@ -113,7 +101,7 @@ func (r *propertyDocumentRepository) FindByPropertyID(ctx context.Context, prope
 
 	var documents []models.PropertyDocument
 	err := query.
-		Order("display_order ASC, created_at ASC").
+		Order("created_at ASC, id ASC").
 		Find(&documents).Error
 
 	if err != nil {
@@ -199,51 +187,6 @@ func (r *propertyDocumentRepository) CountPublicDocuments(ctx context.Context, p
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DISPLAY ORDER MANAGEMENT
-// ═══════════════════════════════════════════════════════════════════════════
-
-// UpdateDisplayOrder updates the display_order field for a document.
-func (r *propertyDocumentRepository) UpdateDisplayOrder(ctx context.Context, documentID uuid.UUID, displayOrder int, tx *gorm.DB) error {
-	db := r.getDB(tx)
-
-	result := db.WithContext(ctx).
-		Model(&models.PropertyDocument{}).
-		Where("id = ?", documentID).
-		Update("display_order", displayOrder)
-
-	if result.Error != nil {
-		return result.Error
-	}
-
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-
-	return nil
-}
-
-// GetNextDisplayOrder returns the next available display order for a property.
-func (r *propertyDocumentRepository) GetNextDisplayOrder(ctx context.Context, propertyID uuid.UUID) (int, error) {
-	var maxOrder sql.NullInt64
-
-	err := r.WithContext(ctx).
-		Model(&models.PropertyDocument{}).
-		Where("property_id = ?", propertyID).
-		Select("MAX(display_order)").
-		Scan(&maxOrder).Error
-
-	if err != nil {
-		return 0, err
-	}
-
-	if !maxOrder.Valid {
-		return 0, nil // No documents exist yet
-	}
-
-	return int(maxOrder.Int64) + 1, nil
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // TYPE-BASED QUERIES
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -258,7 +201,7 @@ func (r *propertyDocumentRepository) FindByType(ctx context.Context, propertyID 
 
 	var documents []models.PropertyDocument
 	err := query.
-		Order("display_order ASC, created_at ASC").
+		Order("created_at ASC, id ASC").
 		Find(&documents).Error
 
 	if err != nil {

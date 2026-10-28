@@ -34,6 +34,25 @@ type InvestmentResponse struct {
 	RefundedAt    *time.Time        `json:"refunded_at,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
+
+	// ── Sale-vote governance (Phase 2, Workstream A3) ──
+	// These fields drive the portfolio's vote UI. When no campaign is open and
+	// the hold period has not elapsed, VoteActive=false and CanTrigger=false.
+	VoteActive  bool    `json:"vote_active"`
+	CanTrigger  bool    `json:"can_trigger"`
+	VoteFor     int     `json:"vote_for"`
+	VoteAgainst int     `json:"vote_against"`
+	VoteTotal   int     `json:"vote_total"` // electors (distinct investors)
+	MyVote      *string `json:"my_vote,omitempty"`
+
+	// EquityPct is this investment's share of the property, derived from
+	// amount_kobo / property target_amount. Rendered as "5.00%".
+	EquityPct string `json:"equity_pct"`
+
+	// HoldYears and SaleEligibleAt come from the property's hold rule so the
+	// portfolio can render the hold timeline without guessing.
+	HoldYears      int        `json:"hold_years"`
+	SaleEligibleAt *time.Time `json:"sale_eligible_at,omitempty"`
 }
 
 // PortfolioSummaryResponse aggregates a user's holdings for the dashboard.
