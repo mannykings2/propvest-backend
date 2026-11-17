@@ -151,7 +151,7 @@ func main() {
 	// enqueues email/SMS work onto RabbitMQ.
 	notificationService := services.NewNotificationService(notificationRepo, hub, mq)
 
-	authService := services.NewAuthService(userRepo, walletRepo, refreshTokenRepo, tokenRepo, emailSender, auditRecorder, cfg, database.DB)
+	authService := services.NewAuthService(userRepo, walletRepo, refreshTokenRepo, tokenRepo, repositories.NewLoginHistoryRepository(database.DB), emailSender, auditRecorder, cfg, database.DB)
 	userService := services.NewUserService(userRepo, otpRepo, refreshTokenRepo, kycSubmissionRepo, smsService, cloudinaryService, cfg)
 
 	// Phase 7 (Money layer): double-entry ledger. Seeded BEFORE any service can

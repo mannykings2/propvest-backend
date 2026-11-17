@@ -81,6 +81,11 @@ type User struct {
 	Occupation *string `json:"occupation,omitempty"`
 	Employer   *string `json:"employer,omitempty"`
 
+	// LastLoginAt is stamped on every successful login (migration 000036).
+	// Powers the admin user list ("when did they last sign in") and the
+	// dashboard's active-this-month metric. NULL for never-logged-in users.
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+
 	// Suspension tracking (Milestone 7 - Admin Management)
 	// When an admin suspends a user, these fields create an audit trail
 	SuspendedAt     *time.Time `json:"suspended_at,omitempty"`
@@ -91,10 +96,10 @@ type User struct {
 	// the account stays active, but withdrawals are blocked pending review.
 	// Set manually via POST /admin/risk/users/:id/flag or automatically by a
 	// screening hit. Cleared through the risk-alert triage flow.
-	RiskFlagged     bool       `gorm:"not null;default:false" json:"risk_flagged"`
-	RiskFlagReason  *string    `json:"risk_flag_reason,omitempty"`
-	RiskFlaggedAt   *time.Time `json:"risk_flagged_at,omitempty"`
-	RiskFlaggedBy   *uuid.UUID `gorm:"type:uuid" json:"risk_flagged_by,omitempty"`
+	RiskFlagged    bool       `gorm:"not null;default:false" json:"risk_flagged"`
+	RiskFlagReason *string    `json:"risk_flag_reason,omitempty"`
+	RiskFlaggedAt  *time.Time `json:"risk_flagged_at,omitempty"`
+	RiskFlaggedBy  *uuid.UUID `gorm:"type:uuid" json:"risk_flagged_by,omitempty"`
 
 	// GORM automatically manages these three fields when you use
 	// gorm.Model or declare them explicitly like this.
@@ -113,11 +118,11 @@ type User struct {
 
 // Role constants define the user role hierarchy (Milestone 7)
 // Hierarchy (lowest to highest privilege):
-//   1. investor - Can invest, manage portfolio, fund wallet
-//   2. developer - Can create properties, upload documents
-//   3. staff - Can view reports, assist users
-//   4. admin - Can manage users, approve properties, view analytics
-//   5. super_admin - Can manage admins, change roles, access all features
+//  1. investor - Can invest, manage portfolio, fund wallet
+//  2. developer - Can create properties, upload documents
+//  3. staff - Can view reports, assist users
+//  4. admin - Can manage users, approve properties, view analytics
+//  5. super_admin - Can manage admins, change roles, access all features
 const (
 	RoleInvestor   = "investor"
 	RoleDeveloper  = "developer"

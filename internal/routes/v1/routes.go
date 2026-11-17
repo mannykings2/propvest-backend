@@ -156,6 +156,9 @@ func RegisterRoutes(
 		me.POST("/kyc/submit", userHandler.SubmitKYC)
 		me.GET("/kyc", userHandler.GetKYCStatus)
 
+		// Recent sign-ins (IP/UA trail) — Profile "Recent sign-ins" section.
+		me.GET("/login-history", authHandler.LoginHistory)
+
 		// Phase 9 (NDPA): consent read/withdraw, marketing state + the user's
 		// own unsubscribe link, async data export, deferred account erasure.
 		me.GET("/consents", privacyHandler.GetConsents)
@@ -205,7 +208,7 @@ func RegisterRoutes(
 			// Rate limited: Maximum 3 withdrawals per hour per user
 			// Launch policy gate applies too (money out).
 			authenticated.POST("/withdraw",
-				middleware.WithdrawalRateLimit(3),      // Apply rate limiting
+				middleware.WithdrawalRateLimit(3),                // Apply rate limiting
 				middleware.RequireVerifiedAccount(cfg, userRepo), // Launch policy flags
 				walletHandler.RequestWithdrawal)
 

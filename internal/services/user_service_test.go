@@ -95,6 +95,7 @@ func setupUserServiceTest(t *testing.T) (*userService, *MockUserRepository, *Moc
 	cfg := &config.Config{
 		JWTSecret:        "test-secret-key-at-least-32-chars-long",
 		JWTRefreshSecret: "test-refresh-secret-key-at-least-32-chars-long",
+		BcryptCost:       10,
 	}
 
 	svc := &userService{

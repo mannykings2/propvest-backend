@@ -88,20 +88,21 @@ func (s *dashboardService) GetDashboard(ctx context.Context, actorID uuid.UUID) 
 	// ───────────────────────────────────────────────────────────────────────
 	// USER METRICS
 	// ───────────────────────────────────────────────────────────────────────
-	
+
 	// Total users (exclude soft-deleted)
 	s.db.WithContext(ctx).
 		Model(&models.User{}).
 		Where("deleted_at IS NULL").
 		Count(&dashboard.Users.Total)
 
-	// Active users this month (users with any activity)
-	// NOTE: We don't have last_login_at yet, so this uses created_at as proxy
-	// In Phase 4, this will be updated to track actual login activity
+	// Active users this month — users who actually SIGNED IN this month.
+	// last_login_at is stamped by the auth service on every successful login
+	// (migration 000036); never-logged-in users fall back to created_at so
+	// brand-new signups still count for their first month.
 	thisMonthStart := time.Now().AddDate(0, 0, -30)
 	s.db.WithContext(ctx).
 		Model(&models.User{}).
-		Where("deleted_at IS NULL AND created_at >= ?", thisMonthStart).
+		Where("deleted_at IS NULL AND COALESCE(last_login_at, created_at) >= ?", thisMonthStart).
 		Count(&dashboard.Users.ActiveThisMonth)
 
 	// New users this month
@@ -138,14 +139,14 @@ func (s *dashboardService) GetDashboard(ctx context.Context, actorID uuid.UUID) 
 	// ───────────────────────────────────────────────────────────────────────
 	// PROPERTY METRICS
 	// ───────────────────────────────────────────────────────────────────────
-	
+
 	// Property counts by status
 	type PropertyStatusCount struct {
-		Status string
-		Count  int64
+		Status     string
+		Count      int64
 		TotalValue int64
 	}
-	
+
 	var propertyCounts []PropertyStatusCount
 	s.db.WithContext(ctx).
 		Model(&models.Property{}).
@@ -158,7 +159,7 @@ func (s *dashboardService) GetDashboard(ctx context.Context, actorID uuid.UUID) 
 	for _, pc := range propertyCounts {
 		dashboard.Properties.Total += pc.Count
 		dashboard.Properties.TotalValue += pc.TotalValue
-		
+
 		switch pc.Status {
 		case "draft":
 			dashboard.Properties.Draft = pc.Count
@@ -174,7 +175,7 @@ func (s *dashboardService) GetDashboard(ctx context.Context, actorID uuid.UUID) 
 	// ───────────────────────────────────────────────────────────────────────
 	// INVESTMENT METRICS
 	// ───────────────────────────────────────────────────────────────────────
-	
+
 	// Total investment count
 	s.db.WithContext(ctx).
 		Model(&models.Investment{}).
@@ -211,13 +212,13 @@ func (s *dashboardService) GetDashboard(ctx context.Context, actorID uuid.UUID) 
 	// ───────────────────────────────────────────────────────────────────────
 	// FINANCIAL METRICS
 	// ───────────────────────────────────────────────────────────────────────
-	
+
 	// Deposits (completed)
 	type FinancialSum struct {
 		TotalAmount int64
 		Count       int64
 	}
-	
+
 	var depositSum FinancialSum
 	s.db.WithContext(ctx).
 		Model(&models.WalletTransaction{}).

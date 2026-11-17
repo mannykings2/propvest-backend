@@ -204,7 +204,7 @@ func (s *userService) ChangePassword(ctx context.Context, userID uuid.UUID, req 
 	}
 
 	// Hash new password
-	hashedPassword, err := password.Hash(req.NewPassword)
+	hashedPassword, err := password.HashWithCost(req.NewPassword, s.config.BcryptCost)
 	if err != nil {
 		return errors.ErrInternalServer
 	}
@@ -262,9 +262,9 @@ func (s *userService) RequestPhoneChange(ctx context.Context, userID uuid.UUID, 
 		// OTP already sent and still valid
 		remainingTime := existingOTP.ExpiresAt.Sub(time.Now())
 		return &dto.PhoneChangeResponse{
-			Message:          "OTP already sent to this number",
-			ExpiresIn:        int(remainingTime.Seconds()),
-			CanResendAfter:   int(remainingTime.Seconds()),
+			Message:        "OTP already sent to this number",
+			ExpiresIn:      int(remainingTime.Seconds()),
+			CanResendAfter: int(remainingTime.Seconds()),
 		}, nil
 	}
 
@@ -449,4 +449,3 @@ func (s *userService) VerifyPhoneChange(ctx context.Context, userID uuid.UUID, r
 	// Return updated profile
 	return s.GetProfile(ctx, userID)
 }
-

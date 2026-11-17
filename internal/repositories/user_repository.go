@@ -11,9 +11,9 @@ import (
 
 // UserRepository defines the interface for user data access operations.
 // Using an interface allows us to:
-//   1. Mock the repository in service tests
-//   2. Swap implementations without changing service code
-//   3. Document the repository's contract clearly
+//  1. Mock the repository in service tests
+//  2. Swap implementations without changing service code
+//  3. Document the repository's contract clearly
 type UserRepository interface {
 	Create(ctx context.Context, user *models.User) error
 	// HasPendingDeletion reports whether the user has a LIVE erasure request
@@ -33,9 +33,10 @@ type UserRepository interface {
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
 	ExistsByPhone(ctx context.Context, phone string) (bool, error)
 	FindByIDWithWallet(ctx context.Context, id uuid.UUID) (*models.User, error)
-	
+
 	// Admin operations (Milestone 7)
 	List(ctx context.Context, filter UserFilter, limit, offset int) ([]*models.User, int64, error)
+	ListForMessaging(ctx context.Context, filter UserFilter, limit int) ([]*models.User, error)
 	FindByIDWithWalletAndInvestments(ctx context.Context, id uuid.UUID) (*models.User, error)
 
 	// FindSessionState loads the narrow account state the auth middleware
@@ -78,6 +79,7 @@ func NewUserRepository(db *gorm.DB) UserRepository {
 //   - Setting created_at and updated_at
 //   - Generating UUID (via database default)
 //   - Running BeforeCreate hooks (e.g., UserCode generation)
+//
 // HasPendingDeletion checks for a live (not cancelled/executed) erasure
 // request. One indexed lookup on the partial unique index's target column.
 func (r *userRepository) HasPendingDeletion(ctx context.Context, userID uuid.UUID) (bool, error) {
@@ -127,10 +129,11 @@ func (r *userRepository) FindByEmail(ctx context.Context, email string) (*models
 //   - Phone-based authentication (future feature)
 //
 // Example usage:
-//   user, err := repo.FindByPhone(ctx, "+2348012345678")
-//   if err == nil {
-//       return errors.ErrPhoneAlreadyExists
-//   }
+//
+//	user, err := repo.FindByPhone(ctx, "+2348012345678")
+//	if err == nil {
+//	    return errors.ErrPhoneAlreadyExists
+//	}
 func (r *userRepository) FindByPhone(ctx context.Context, phone string) (*models.User, error) {
 	var user models.User
 	// WHERE phone = ? uses the unique index for fast lookup
@@ -145,7 +148,8 @@ func (r *userRepository) FindByPhone(ctx context.Context, phone string) (*models
 // GORM automatically updates the updated_at field via the database trigger.
 //
 // Important: This updates ALL fields. For partial updates, use:
-//   db.Model(&user).Updates(map[string]interface{}{"field": value})
+//
+//	db.Model(&user).Updates(map[string]interface{}{"field": value})
 func (r *userRepository) Update(ctx context.Context, user *models.User) error {
 	return r.WithContext(ctx).Save(user).Error
 }
@@ -158,18 +162,20 @@ func (r *userRepository) Update(ctx context.Context, user *models.User) error {
 //   - updates: Map of field names to new values
 //
 // Example usage (update just the phone):
-//   updates := map[string]interface{}{
-//       "phone": "+2348012345678",
-//       "updated_at": time.Now(),
-//   }
-//   err := repo.UpdatePartial(ctx, userID, updates)
+//
+//	updates := map[string]interface{}{
+//	    "phone": "+2348012345678",
+//	    "updated_at": time.Now(),
+//	}
+//	err := repo.UpdatePartial(ctx, userID, updates)
 //
 // Example usage (update name and avatar):
-//   updates := map[string]interface{}{
-//       "full_name": "New Name",
-//       "avatar_url": "https://cloudinary.com/image.jpg",
-//   }
-//   err := repo.UpdatePartial(ctx, userID, updates)
+//
+//	updates := map[string]interface{}{
+//	    "full_name": "New Name",
+//	    "avatar_url": "https://cloudinary.com/image.jpg",
+//	}
+//	err := repo.UpdatePartial(ctx, userID, updates)
 //
 // Why use UpdatePartial instead of Update?
 //   - Update() requires loading the full user first
@@ -178,9 +184,10 @@ func (r *userRepository) Update(ctx context.Context, user *models.User) error {
 //   - Atomic operation (no race conditions)
 //
 // Generated SQL:
-//   UPDATE users 
-//   SET phone = $1, updated_at = NOW() 
-//   WHERE id = $2 AND deleted_at IS NULL
+//
+//	UPDATE users
+//	SET phone = $1, updated_at = NOW()
+//	WHERE id = $2 AND deleted_at IS NULL
 func (r *userRepository) UpdatePartial(ctx context.Context, id uuid.UUID, updates map[string]interface{}, txs ...*gorm.DB) error {
 	// Model(&models.User{}) tells GORM which table to update
 	// Where("id = ?", id) specifies which row
@@ -208,7 +215,8 @@ func (r *userRepository) UpdatePartial(ctx context.Context, id uuid.UUID, update
 // GORM automatically excludes soft-deleted records from queries.
 //
 // To include soft-deleted records:
-//   db.Unscoped().Where("email = ?", email).First(&user)
+//
+//	db.Unscoped().Where("email = ?", email).First(&user)
 func (r *userRepository) Delete(ctx context.Context, id uuid.UUID, txs ...*gorm.DB) error {
 	q := r.db
 	if len(txs) > 0 && txs[0] != nil {
@@ -267,13 +275,14 @@ func (r *userRepository) ExistsByEmail(ctx context.Context, email string) (bool,
 //   - Phone update validation (prevent taking another user's phone)
 //
 // Example usage:
-//   exists, err := repo.ExistsByPhone(ctx, "+2348012345678")
-//   if err != nil {
-//       return errors.ErrInternalServer
-//   }
-//   if exists {
-//       return errors.ErrPhoneAlreadyExists
-//   }
+//
+//	exists, err := repo.ExistsByPhone(ctx, "+2348012345678")
+//	if err != nil {
+//	    return errors.ErrInternalServer
+//	}
+//	if exists {
+//	    return errors.ErrPhoneAlreadyExists
+//	}
 //
 // Why Count() instead of First()?
 //   - Count() only queries the index, not the full row
@@ -282,7 +291,7 @@ func (r *userRepository) ExistsByEmail(ctx context.Context, email string) (bool,
 func (r *userRepository) ExistsByPhone(ctx context.Context, phone string) (bool, error) {
 	var count int64
 	// Count() generates SQL:
-	//   SELECT COUNT(*) FROM users 
+	//   SELECT COUNT(*) FROM users
 	//   WHERE phone = $1 AND deleted_at IS NULL
 	err := r.WithContext(ctx).
 		Model(&models.User{}).
@@ -298,8 +307,9 @@ func (r *userRepository) ExistsByPhone(ctx context.Context, phone string) (bool,
 // This is more efficient than separate queries when you need both.
 //
 // Usage:
-//   user, err := repo.FindByIDWithWallet(ctx, userID)
-//   balance := user.Wallet.MainBalance
+//
+//	user, err := repo.FindByIDWithWallet(ctx, userID)
+//	balance := user.Wallet.MainBalance
 func (r *userRepository) FindByIDWithWallet(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	var user models.User
 	err := r.WithContext(ctx).Preload("Wallet").Where("id = ?", id).First(&user).Error
@@ -313,14 +323,14 @@ func (r *userRepository) FindByIDWithWallet(ctx context.Context, id uuid.UUID) (
 // This helper makes service layer code cleaner.
 //
 // Usage:
-//   user, err := repo.FindByEmail(ctx, email)
-//   if repositories.IsErrRecordNotFound(err) {
-//       return ErrInvalidCredentials
-//   }
+//
+//	user, err := repo.FindByEmail(ctx, email)
+//	if repositories.IsErrRecordNotFound(err) {
+//	    return ErrInvalidCredentials
+//	}
 func IsErrRecordNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN USER MANAGEMENT (Milestone 7 - Phase 4)
@@ -333,6 +343,8 @@ type UserFilter struct {
 	KYCStatus   *string // Filter by KYC status
 	IsActive    *bool   // Filter by active status
 	IsSuspended *bool   // Filter by suspension status
+	MinBalance  *int64  // Minimum combined main + earnings wallet balance in kobo
+	HasInvested *bool   // User has at least one active investment
 }
 
 // List returns a paginated list of users matching the filter criteria.
@@ -352,10 +364,11 @@ type UserFilter struct {
 //   - error: Database error if any
 //
 // Query pattern:
-//   SELECT * FROM users
-//   WHERE <filters>
-//   ORDER BY created_at DESC
-//   LIMIT ? OFFSET ?
+//
+//	SELECT * FROM users
+//	WHERE <filters>
+//	ORDER BY created_at DESC
+//	LIMIT ? OFFSET ?
 func (r *userRepository) List(ctx context.Context, filter UserFilter, limit, offset int) ([]*models.User, int64, error) {
 	var users []*models.User
 	var total int64
@@ -411,6 +424,44 @@ func (r *userRepository) List(ctx context.Context, filter UserFilter, limit, off
 	}
 
 	return users, total, nil
+}
+
+// ListForMessaging applies message segment criteria in SQL and caps results at
+// the requested safety limit.
+func (r *userRepository) ListForMessaging(ctx context.Context, filter UserFilter, limit int) ([]*models.User, error) {
+	var users []*models.User
+	query := r.WithContext(ctx).Model(&models.User{}).
+		Where("is_active = ? AND suspended_at IS NULL", true)
+
+	if filter.Role != nil {
+		query = query.Where("role = ?", *filter.Role)
+	}
+	if filter.KYCStatus != nil {
+		query = query.Where("kyc_status = ?", *filter.KYCStatus)
+	}
+	if filter.MinBalance != nil {
+		query = query.Where(`EXISTS (
+			SELECT 1 FROM wallets w
+			WHERE w.user_id = users.id
+			  AND COALESCE(w.main_balance, 0) + COALESCE(w.earnings_balance, 0) >= ?
+		)`, *filter.MinBalance)
+	}
+	if filter.HasInvested != nil {
+		anyInvestment := r.WithContext(ctx).Model(&models.Investment{}).
+			Select("1").Where("investments.user_id = users.id")
+		if *filter.HasInvested {
+			query = query.Where("EXISTS (?)", anyInvestment)
+		} else {
+			query = query.Where("NOT EXISTS (?)", anyInvestment)
+		}
+	}
+	if limit < 1 || limit > 10001 {
+		limit = 10001 // One over the service cap so oversize segments are rejected, never silently truncated.
+	}
+	if err := query.Order("created_at DESC").Limit(limit).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
 }
 
 // FindByIDWithWalletAndInvestments retrieves a user with their wallet and investment summary.

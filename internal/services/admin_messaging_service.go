@@ -167,7 +167,7 @@ func (s *adminMessagingService) getUsersByIDs(ctx context.Context, userIDs []str
 		if err != nil {
 			continue // Skip invalid UUIDs (already validated in Validate())
 		}
-		
+
 		user, err := s.userRepo.FindByID(ctx, id)
 		if err != nil {
 			logger.FromContext(ctx).Warn("user not found in bulk message targeting", "user_id", id)
@@ -180,35 +180,26 @@ func (s *adminMessagingService) getUsersByIDs(ctx context.Context, userIDs []str
 
 // getUsersByFilters fetches users matching filter criteria.
 func (s *adminMessagingService) getUsersByFilters(ctx context.Context, filters *dto.UserFilters) ([]*models.User, error) {
-	// TODO: Implement repository method for filtered user fetch
-	// For now, fetch all and filter in memory (not scalable for production)
-	allUsers, err := s.getAllUsers(ctx)
+	if filters == nil {
+		return nil, apperrors.NewAppError("filters required for segment targeting", "invalid_target")
+	}
+
+	userFilter := repositories.UserFilter{}
+	if filters.Role != "" {
+		userFilter.Role = &filters.Role
+	}
+	if filters.KYCStatus != "" {
+		userFilter.KYCStatus = &filters.KYCStatus
+	}
+	userFilter.MinBalance = filters.MinBalance
+	userFilter.HasInvested = filters.HasInvested
+
+	users, err := s.userRepo.ListForMessaging(ctx, userFilter, 10001)
 	if err != nil {
-		return nil, err
+		logger.FromContext(ctx).Error("failed to resolve bulk-message segment", "error", err)
+		return nil, apperrors.ErrInternalServer
 	}
-
-	// Apply filters
-	filtered := make([]*models.User, 0)
-	for _, user := range allUsers {
-		if s.matchesFilters(user, filters) {
-			filtered = append(filtered, user)
-		}
-	}
-
-	return filtered, nil
-}
-
-// matchesFilters checks if a user matches filter criteria.
-func (s *adminMessagingService) matchesFilters(user *models.User, filters *dto.UserFilters) bool {
-	if filters.Role != "" && user.Role != filters.Role {
-		return false
-	}
-	if filters.KYCStatus != "" && user.KYCStatus != filters.KYCStatus {
-		return false
-	}
-	// TODO: Add wallet balance filter (requires wallet join/query)
-	// TODO: Add has_invested filter (requires investment count query)
-	return true
+	return users, nil
 }
 
 // getAllUsers fetches all users.
@@ -216,19 +207,19 @@ func (s *adminMessagingService) getAllUsers(ctx context.Context) ([]*models.User
 	// TODO: Implement repository method to fetch all users efficiently
 	// For MVP, we use direct DB access (not ideal but functional)
 	// In production, add UserRepository.ListAll(ctx, limit, offset) method
-	
+
 	var users []models.User
 	if err := s.db.WithContext(ctx).Limit(10000).Find(&users).Error; err != nil {
 		logger.FromContext(ctx).Error("failed to fetch all users", "error", err)
 		return nil, apperrors.ErrInternalServer
 	}
-	
+
 	// Convert []models.User to []*models.User
 	userPtrs := make([]*models.User, len(users))
 	for i := range users {
 		userPtrs[i] = &users[i]
 	}
-	
+
 	return userPtrs, nil
 }
 
@@ -237,14 +228,14 @@ func (s *adminMessagingService) createBulkInAppNotifications(ctx context.Context
 	count := 0
 	for _, user := range users {
 		notif := &models.Notification{
-			UserID: user.ID,
-			Type:   notifType,
-			Title:  title,
-			Body:   body,
-			Read:   false,
+			UserID:   user.ID,
+			Type:     notifType,
+			Title:    title,
+			Body:     body,
+			Read:     false,
 			Metadata: datatypes.JSON([]byte("{}")),
 		}
-		
+
 		if err := s.notificationRepo.Create(ctx, notif); err != nil {
 			logger.FromContext(ctx).Error("failed to create in-app notification", "user_id", user.ID, "error", err)
 			continue // Skip failed notifications

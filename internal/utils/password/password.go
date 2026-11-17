@@ -2,6 +2,7 @@ package password
 
 import (
 	"errors"
+	"fmt"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -51,7 +52,7 @@ const (
 	//
 	// Rule of thumb: hash should take ~250ms on your server
 	// As computers get faster, increase cost every few years
-	DefaultCost = 10
+	DefaultCost = 12
 )
 
 // Hash converts a plain-text password into a bcrypt hash
@@ -65,19 +66,31 @@ const (
 //   - Error if password is too long or hashing fails
 //
 // Security properties:
-//   1. Same password generates different hash each time (random salt)
-//   2. Hash cannot be reversed to get original password
-//   3. Only way to verify is to hash the input and compare
+//  1. Same password generates different hash each time (random salt)
+//  2. Hash cannot be reversed to get original password
+//  3. Only way to verify is to hash the input and compare
 //
 // Example:
-//   hash1, _ := Hash("password123")  // $2a$10$N9qo8uLOickgx2ZMRZoMye...
-//   hash2, _ := Hash("password123")  // $2a$10$DifferentSaltDifferentHash...
-//   // Same password, different hashes - this is correct!
+//
+//	hash1, _ := Hash("password123")  // $2a$10$N9qo8uLOickgx2ZMRZoMye...
+//	hash2, _ := Hash("password123")  // $2a$10$DifferentSaltDifferentHash...
+//	// Same password, different hashes - this is correct!
 func Hash(plainPassword string) (string, error) {
+	return HashWithCost(plainPassword, DefaultCost)
+}
+
+// HashWithCost hashes a password using the configured bcrypt work factor.
+// Config validation constrains the cost to bcrypt's supported range (10–15).
+// Existing hashes remain verifiable because bcrypt encodes the cost in each
+// stored hash; new passwords use the current configured cost.
+func HashWithCost(plainPassword string, cost int) (string, error) {
 	// Enforce maximum length to prevent DoS
 	// bcrypt internally truncates at 72 bytes, but we want to reject early
 	if len(plainPassword) > MaxPasswordLength {
 		return "", ErrPasswordTooLong
+	}
+	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
+		return "", fmt.Errorf("bcrypt cost must be between %d and %d", bcrypt.MinCost, bcrypt.MaxCost)
 	}
 
 	// bcrypt.GenerateFromPassword does all the work:
@@ -92,9 +105,9 @@ func Hash(plainPassword string) (string, error) {
 	//   - Salt (22 base64 characters)
 	//   - Hash (31 base64 characters)
 	//
-	// Format: $2a$10$salt22chars$hash31chars
+	// Format: $2a$<cost>$salt22chars$hash31chars
 	// Total length: 60 characters
-	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(plainPassword), DefaultCost)
+	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(plainPassword), cost)
 	if err != nil {
 		return "", err
 	}
@@ -116,22 +129,23 @@ func Hash(plainPassword string) (string, error) {
 //   - Other error if hash is malformed
 //
 // How it works:
-//   1. Extract salt from the stored hash
-//   2. Hash the plain password with the same salt and cost
-//   3. Compare the new hash with the stored hash
-//   4. Return match result
+//  1. Extract salt from the stored hash
+//  2. Hash the plain password with the same salt and cost
+//  3. Compare the new hash with the stored hash
+//  4. Return match result
 //
 // Security properties:
-//   1. Constant-time comparison (prevents timing attacks)
-//   2. No information leakage if password is wrong
-//   3. Cannot extract salt to precompute rainbow tables (salt is public but unique per hash)
+//  1. Constant-time comparison (prevents timing attacks)
+//  2. No information leakage if password is wrong
+//  3. Cannot extract salt to precompute rainbow tables (salt is public but unique per hash)
 //
 // Example usage in service:
-//   err := password.Verify(loginRequest.Password, user.PasswordHash)
-//   if err != nil {
-//       return errors.New("invalid email or password")  // Don't reveal which is wrong!
-//   }
-//   // Password correct, proceed with login
+//
+//	err := password.Verify(loginRequest.Password, user.PasswordHash)
+//	if err != nil {
+//	    return errors.New("invalid email or password")  // Don't reveal which is wrong!
+//	}
+//	// Password correct, proceed with login
 func Verify(plainPassword, hashedPassword string) error {
 	// bcrypt.CompareHashAndPassword does:
 	//   1. Parse the hash to extract algorithm, cost, and salt
@@ -161,12 +175,13 @@ func Verify(plainPassword, hashedPassword string) error {
 // This allows gradual migration to stronger hashing as computers get faster
 //
 // Usage:
-//   if password.NeedsRehash(user.PasswordHash) {
-//       // User logged in successfully, but hash is old
-//       // Rehash with current cost and update database
-//       newHash, _ := password.Hash(plainPassword)
-//       db.UpdateUserPassword(user.ID, newHash)
-//   }
+//
+//	if password.NeedsRehash(user.PasswordHash) {
+//	    // User logged in successfully, but hash is old
+//	    // Rehash with current cost and update database
+//	    newHash, _ := password.Hash(plainPassword)
+//	    db.UpdateUserPassword(user.ID, newHash)
+//	}
 //
 // When to use:
 //   - After successful login (user just proved they know the password)

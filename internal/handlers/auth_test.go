@@ -77,6 +77,14 @@ func (m *MockAuthService) ResetPassword(ctx context.Context, token, newPassword 
 	return args.Error(0)
 }
 
+func (m *MockAuthService) LoginHistory(ctx context.Context, userID uuid.UUID, limit int) ([]*models.LoginHistory, error) {
+	args := m.Called(ctx, userID, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*models.LoginHistory), args.Error(1)
+}
+
 // Helper functions
 
 func setupTestRouter() *gin.Engine {
@@ -163,7 +171,7 @@ func TestAuthHandler_Register_Success(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusCreated, w.Code)
-	
+
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
@@ -196,7 +204,7 @@ func TestAuthHandler_Register_ValidationError_InvalidEmail(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
-	
+
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
@@ -306,7 +314,7 @@ func TestAuthHandler_Login_Success(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusOK, w.Code)
-	
+
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
@@ -391,7 +399,7 @@ func TestAuthHandler_RefreshToken_Success(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusOK, w.Code)
-	
+
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
@@ -473,7 +481,7 @@ func TestAuthHandler_Logout_Success(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusOK, w.Code)
-	
+
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
@@ -510,7 +518,7 @@ func TestAuthHandler_LogoutAll_Success(t *testing.T) {
 	mockService := new(MockAuthService)
 	handler := NewAuthHandler(mockService)
 	router := setupTestRouter()
-	
+
 	// Simulate authenticated user - middleware sets user_id as string
 	testUserID := uuid.New()
 	router.Use(func(c *gin.Context) {
@@ -529,7 +537,7 @@ func TestAuthHandler_LogoutAll_Success(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusOK, w.Code)
-	
+
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
@@ -543,7 +551,7 @@ func TestAuthHandler_LogoutAll_ServiceError(t *testing.T) {
 	mockService := new(MockAuthService)
 	handler := NewAuthHandler(mockService)
 	router := setupTestRouter()
-	
+
 	testUserID := uuid.New()
 	router.Use(func(c *gin.Context) {
 		c.Set("user_id", testUserID.String())

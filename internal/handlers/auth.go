@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/mannykings2/propvest-backend/internal/dto"
+	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/response"
 	"github.com/mannykings2/propvest-backend/internal/services"
 )
@@ -35,24 +37,26 @@ func NewAuthHandler(authService services.AuthService) *AuthHandler {
 // Register handles POST /api/v1/auth/register
 //
 // Request body:
-//   {
-//     "full_name": "Chukwuemeka Obi",
-//     "email": "chukwuemeka@example.com",
-//     "password": "SecurePass123!",
-//     "phone": "+2348012345678"
-//   }
+//
+//	{
+//	  "full_name": "Chukwuemeka Obi",
+//	  "email": "chukwuemeka@example.com",
+//	  "password": "SecurePass123!",
+//	  "phone": "+2348012345678"
+//	}
 //
 // Success response (201 Created):
-//   {
-//     "success": true,
-//     "message": "Registration successful",
-//     "data": {
-//       "user": {...},
-//       "access_token": "eyJhbGc...",
-//       "refresh_token": "eyJhbGc...",
-//       "token_type": "Bearer"
-//     }
-//   }
+//
+//	{
+//	  "success": true,
+//	  "message": "Registration successful",
+//	  "data": {
+//	    "user": {...},
+//	    "access_token": "eyJhbGc...",
+//	    "refresh_token": "eyJhbGc...",
+//	    "token_type": "Bearer"
+//	  }
+//	}
 //
 // Error responses:
 //   - 400 Bad Request: Validation failed (missing fields, invalid format)
@@ -61,9 +65,10 @@ func NewAuthHandler(authService services.AuthService) *AuthHandler {
 //   - 500 Internal Server Error: Database error, unexpected failure
 //
 // Example curl:
-//   curl -X POST http://localhost:8080/api/v1/auth/register \
-//     -H "Content-Type: application/json" \
-//     -d '{"full_name":"John Doe","email":"john@example.com","password":"SecurePass123!","phone":"+2348012345678"}'
+//
+//	curl -X POST http://localhost:8080/api/v1/auth/register \
+//	  -H "Content-Type: application/json" \
+//	  -d '{"full_name":"John Doe","email":"john@example.com","password":"SecurePass123!","phone":"+2348012345678"}'
 func (h *AuthHandler) Register(c *gin.Context) {
 	// Step 1: Parse and validate request body
 	// ShouldBindJSON does two things:
@@ -99,22 +104,24 @@ func (h *AuthHandler) Register(c *gin.Context) {
 // Login handles POST /api/v1/auth/login
 //
 // Request body:
-//   {
-//     "email": "chukwuemeka@example.com",
-//     "password": "SecurePass123!"
-//   }
+//
+//	{
+//	  "email": "chukwuemeka@example.com",
+//	  "password": "SecurePass123!"
+//	}
 //
 // Success response (200 OK):
-//   {
-//     "success": true,
-//     "message": "Login successful",
-//     "data": {
-//       "user": {...},
-//       "access_token": "eyJhbGc...",
-//       "refresh_token": "eyJhbGc...",
-//       "token_type": "Bearer"
-//     }
-//   }
+//
+//	{
+//	  "success": true,
+//	  "message": "Login successful",
+//	  "data": {
+//	    "user": {...},
+//	    "access_token": "eyJhbGc...",
+//	    "refresh_token": "eyJhbGc...",
+//	    "token_type": "Bearer"
+//	  }
+//	}
 //
 // Error responses:
 //   - 400 Bad Request: Validation failed
@@ -128,9 +135,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 //   - Rate limiting should be applied at middleware level
 //
 // Example curl:
-//   curl -X POST http://localhost:8080/api/v1/auth/login \
-//     -H "Content-Type: application/json" \
-//     -d '{"email":"john@example.com","password":"SecurePass123!"}'
+//
+//	curl -X POST http://localhost:8080/api/v1/auth/login \
+//	  -H "Content-Type: application/json" \
+//	  -d '{"email":"john@example.com","password":"SecurePass123!"}'
 func (h *AuthHandler) Login(c *gin.Context) {
 	// Parse and validate request
 	var req dto.LoginRequest
@@ -139,8 +147,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Call service
-	result, err := h.authService.Login(c.Request.Context(), req)
+	// Attach request metadata (IP, user agent, request id) so the service
+	// can record sign-in evidence (login_history + users.last_login_at).
+	result, err := h.authService.Login(auditContext(c), req)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -149,22 +158,49 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// Return success
 	response.SuccessWithMessage(c, http.StatusOK, "Login successful", result)
 }
+
+// LoginHistory handles GET /api/v1/me/login-history
 //
+// Returns the caller's most recent successful sign-ins (newest first,
+// default 10, max 50) so the Profile page can show "Recent sign-ins" —
+// the feature that lets a user notice a login from a device they don't
+// own. Ownership is implicit: the user_id comes from the JWT, so a caller
+// can only ever see their own history.
+func (h *AuthHandler) LoginHistory(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return
+	}
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	rows, err := h.authService.LoginHistory(c.Request.Context(), userID, limit)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+	if rows == nil {
+		rows = []*models.LoginHistory{}
+	}
+	response.Success(c, http.StatusOK, gin.H{"logins": rows})
+}
+
 // Request body:
-//   {
-//     "refresh_token": "eyJhbGc..."
-//   }
+//
+//	{
+//	  "refresh_token": "eyJhbGc..."
+//	}
 //
 // Success response (200 OK):
-//   {
-//     "success": true,
-//     "message": "Token refreshed successfully",
-//     "data": {
-//       "access_token": "eyJhbGc...",
-//       "refresh_token": "eyJhbGc...",  // NEW token (rotation)
-//       "token_type": "Bearer"
-//     }
-//   }
+//
+//	{
+//	  "success": true,
+//	  "message": "Token refreshed successfully",
+//	  "data": {
+//	    "access_token": "eyJhbGc...",
+//	    "refresh_token": "eyJhbGc...",  // NEW token (rotation)
+//	    "token_type": "Bearer"
+//	  }
+//	}
 //
 // Error responses:
 //   - 400 Bad Request: Missing refresh token
@@ -177,9 +213,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 //   - This makes token theft detectable
 //
 // Example curl:
-//   curl -X POST http://localhost:8080/api/v1/auth/refresh \
-//     -H "Content-Type: application/json" \
-//     -d '{"refresh_token":"eyJhbGc..."}'
+//
+//	curl -X POST http://localhost:8080/api/v1/auth/refresh \
+//	  -H "Content-Type: application/json" \
+//	  -d '{"refresh_token":"eyJhbGc..."}'
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	// Parse request
 	var req dto.RefreshRequest
@@ -202,16 +239,18 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 // Logout handles POST /api/v1/auth/logout
 //
 // Request body:
-//   {
-//     "refresh_token": "eyJhbGc..."
-//   }
+//
+//	{
+//	  "refresh_token": "eyJhbGc..."
+//	}
 //
 // Success response (200 OK):
-//   {
-//     "success": true,
-//     "message": "Logout successful",
-//     "data": null
-//   }
+//
+//	{
+//	  "success": true,
+//	  "message": "Logout successful",
+//	  "data": null
+//	}
 //
 // Error responses:
 //   - 400 Bad Request: Missing refresh token
@@ -224,9 +263,10 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 //   - Logout is idempotent (safe to call multiple times)
 //
 // Example curl:
-//   curl -X POST http://localhost:8080/api/v1/auth/logout \
-//     -H "Content-Type: application/json" \
-//     -d '{"refresh_token":"eyJhbGc..."}'
+//
+//	curl -X POST http://localhost:8080/api/v1/auth/logout \
+//	  -H "Content-Type: application/json" \
+//	  -d '{"refresh_token":"eyJhbGc..."}'
 func (h *AuthHandler) Logout(c *gin.Context) {
 	// Parse request
 	var req dto.RefreshRequest // Reuse RefreshRequest (same structure)
@@ -249,14 +289,16 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 // LogoutAll handles POST /api/v1/auth/logout-all
 //
 // Request headers:
-//   Authorization: Bearer <access_token>
+//
+//	Authorization: Bearer <access_token>
 //
 // Success response (200 OK):
-//   {
-//     "success": true,
-//     "message": "Logged out from all devices",
-//     "data": null
-//   }
+//
+//	{
+//	  "success": true,
+//	  "message": "Logged out from all devices",
+//	  "data": null
+//	}
 //
 // Error responses:
 //   - 401 Unauthorized: Missing or invalid access token
@@ -269,8 +311,9 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 //   - Also called automatically on password change (by service layer)
 //
 // Example curl:
-//   curl -X POST http://localhost:8080/api/v1/auth/logout-all \
-//     -H "Authorization: Bearer eyJhbGc..."
+//
+//	curl -X POST http://localhost:8080/api/v1/auth/logout-all \
+//	  -H "Authorization: Bearer eyJhbGc..."
 func (h *AuthHandler) LogoutAll(c *gin.Context) {
 	// Get user ID from context (set by authentication middleware)
 	// Middleware extracts user_id from JWT and stores it in context
@@ -391,9 +434,9 @@ func (h *AuthHandler) ResendVerification(c *gin.Context) {
 // handleError maps service-layer errors to HTTP responses
 //
 // This uses the response.Error() helper which automatically:
-//   1. Maps error to HTTP status code (via errors.HTTPStatusFromError)
-//   2. Sanitizes error message for client (via errors.ClientMessage)
-//   3. Generates error code (via errors.ErrorCode)
+//  1. Maps error to HTTP status code (via errors.HTTPStatusFromError)
+//  2. Sanitizes error message for client (via errors.ClientMessage)
+//  3. Generates error code (via errors.ErrorCode)
 //
 // The beauty of this approach:
 //   - Handlers don't need to know status codes
@@ -402,11 +445,12 @@ func (h *AuthHandler) ResendVerification(c *gin.Context) {
 //   - Internal errors are automatically sanitized
 //
 // Example flow:
-//   Service returns: errors.ErrInvalidCredentials
-//   HTTPStatusFromError(): 401
-//   ClientMessage(): "Invalid email or password"
-//   ErrorCode(): "invalid_credentials"
-//   Response: {"success": false, "error": "Invalid email or password", "code": "invalid_credentials"}
+//
+//	Service returns: errors.ErrInvalidCredentials
+//	HTTPStatusFromError(): 401
+//	ClientMessage(): "Invalid email or password"
+//	ErrorCode(): "invalid_credentials"
+//	Response: {"success": false, "error": "Invalid email or password", "code": "invalid_credentials"}
 func (h *AuthHandler) handleError(c *gin.Context, err error) {
 	// The response.Error() function handles everything:
 	//   - Determines appropriate HTTP status code

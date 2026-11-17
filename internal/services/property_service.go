@@ -16,8 +16,8 @@ import (
 	"github.com/mannykings2/propvest-backend/internal/models"
 	"github.com/mannykings2/propvest-backend/internal/repositories"
 	"github.com/mannykings2/propvest-backend/internal/utils/cloudinary"
-	"gorm.io/gorm"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 // PropertyService handles property management business logic.
@@ -137,12 +137,12 @@ type PropertyService interface {
 
 // propertyService is the concrete implementation.
 type propertyService struct {
-	propertyRepo   repositories.PropertyRepository
-	imageRepo      repositories.PropertyImageRepository
-	documentRepo   repositories.PropertyDocumentRepository
-	outboxRepo     repositories.OutboxRepository
-	cloudinary     *cloudinary.CloudinaryService
-	db             *gorm.DB
+	propertyRepo repositories.PropertyRepository
+	imageRepo    repositories.PropertyImageRepository
+	documentRepo repositories.PropertyDocumentRepository
+	outboxRepo   repositories.OutboxRepository
+	cloudinary   *cloudinary.CloudinaryService
+	db           *gorm.DB
 }
 
 // NewPropertyService creates a new property service instance.
@@ -155,12 +155,12 @@ func NewPropertyService(
 	db *gorm.DB,
 ) PropertyService {
 	return &propertyService{
-		propertyRepo:   propertyRepo,
-		imageRepo:      imageRepo,
-		documentRepo:   documentRepo,
-		outboxRepo:     outboxRepo,
-		cloudinary:     cloudinaryService,
-		db:             db,
+		propertyRepo: propertyRepo,
+		imageRepo:    imageRepo,
+		documentRepo: documentRepo,
+		outboxRepo:   outboxRepo,
+		cloudinary:   cloudinaryService,
+		db:           db,
 	}
 }
 
@@ -231,10 +231,21 @@ func (s *propertyService) CreateProperty(ctx context.Context, adminID uuid.UUID,
 		InvestorCount:          0,
 	}
 
-	// Save to database
-	err = s.propertyRepo.Create(ctx, property, nil)
+	// Create the property and its initial status history together so an audit
+	// row can never be missing for an otherwise committed property.
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.propertyRepo.Create(ctx, property, tx); err != nil {
+			return err
+		}
+		return tx.Create(&models.PropertyStatusHistory{
+			PropertyID: property.ID,
+			ToStatus:   "draft",
+			ChangedBy:  &adminID,
+			Reason:     statusHistoryString("Property created in draft status"),
+		}).Error
+	})
 	if err != nil {
-		logger.Error("failed to create property", "error", err)
+		logger.Error("failed to create property and initial status history", "error", err)
 		return nil, errors.ErrInternalServer
 	}
 
@@ -460,9 +471,16 @@ func (s *propertyService) GetAdminProperty(ctx context.Context, propertyID uuid.
 		return nil, errors.ErrInternalServer
 	}
 
-	// Load status history
-	// TODO: Implement status history repository method
-	statusHistory := []models.PropertyStatusHistory{}
+	// Load the immutable status history in chronological order for the admin
+	// audit view. Status history is written inside each status-change tx below.
+	var statusHistory []models.PropertyStatusHistory
+	if err := s.db.WithContext(ctx).
+		Where("property_id = ?", propertyID).
+		Order("created_at ASC, id ASC").
+		Find(&statusHistory).Error; err != nil {
+		logger.Error("failed to load property status history", "error", err, "property_id", propertyID)
+		return nil, errors.ErrInternalServer
+	}
 
 	// Convert to DTO
 	response := dto.ToPropertyAdminResponse(property, images, documents, statusHistory)
@@ -557,16 +575,25 @@ func (s *propertyService) PublishProperty(ctx context.Context, adminID uuid.UUID
 
 		publishedAt = time.Now()
 
-		// Create status history record
-		// TODO: Implement status history creation
+		// Persist the transition in the same transaction as the status update
+		// and outbox event. A failed audit insert rolls back the publish.
+		if err := tx.Create(&models.PropertyStatusHistory{
+			PropertyID: propertyID,
+			FromStatus: statusHistoryString("draft"),
+			ToStatus:   "active",
+			ChangedBy:  &adminID,
+			Reason:     statusHistoryString("Admin published property"),
+		}).Error; err != nil {
+			return err
+		}
 
 		// Create outbox event
 		eventPayload := map[string]interface{}{
-			"property_id": propertyID,
-			"title":       property.Title,
-			"slug":        property.Slug,
+			"property_id":  propertyID,
+			"title":        property.Title,
+			"slug":         property.Slug,
 			"published_at": publishedAt,
-			"admin_id":    adminID,
+			"admin_id":     adminID,
 		}
 
 		payloadJSON, err := json.Marshal(eventPayload)
@@ -679,9 +706,13 @@ func (s *propertyService) validatePublicationRequirements(ctx context.Context, p
 // ═══════════════════════════════════════════════════════════════════════════
 
 // generateUniqueSlug generates a URL-friendly slug from title with uniqueness guarantee.
+func statusHistoryString(value string) *string {
+	return &value
+}
+
 func (s *propertyService) generateUniqueSlug(ctx context.Context, title string) (string, error) {
 	baseSlug := makeSlug(title)
-	
+
 	// Try base slug first
 	_, err := s.propertyRepo.FindBySlug(ctx, baseSlug)
 	if repositories.IsErrRecordNotFound(err) {
@@ -713,19 +744,19 @@ func (s *propertyService) generateUniqueSlug(ctx context.Context, title string) 
 func makeSlug(s string) string {
 	// Convert to lowercase
 	s = strings.ToLower(s)
-	
+
 	// Replace spaces and special characters with hyphens
 	reg := regexp.MustCompile("[^a-z0-9]+")
 	s = reg.ReplaceAllString(s, "-")
-	
+
 	// Remove leading/trailing hyphens
 	s = strings.Trim(s, "-")
-	
+
 	// Limit length
 	if len(s) > 200 {
 		s = s[:200]
 	}
-	
+
 	return s
 }
 
@@ -756,7 +787,7 @@ func (s *propertyService) UploadImage(ctx context.Context, adminID uuid.UUID, pr
 
 	// Upload to Cloudinary
 	// Folder: properties/{propertyID}/images
-	
+
 	uploadResult, err := s.cloudinary.UploadPropertyImage(ctx, file, propertyID)
 	if err != nil {
 		logger.Error("failed to upload image to cloudinary", "error", err)
@@ -788,7 +819,7 @@ func (s *propertyService) UploadImage(ctx context.Context, adminID uuid.UUID, pr
 	// Create image record in transaction
 	var imageID uuid.UUID
 	var imageURL string
-	
+
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		// Create image record
 		image := &models.PropertyImage{
@@ -1004,7 +1035,7 @@ func (s *propertyService) UploadDocument(ctx context.Context, adminID uuid.UUID,
 	// Upload to Cloudinary
 	// Folder: properties/{propertyID}/documents
 	// For documents, we'll use UploadPropertyImage for now (Cloudinary handles all file types)
-	
+
 	uploadResult, err := s.cloudinary.UploadPropertyImage(ctx, file, propertyID)
 	if err != nil {
 		logger.Error("failed to upload document to cloudinary", "error", err)
@@ -1169,10 +1200,10 @@ func validateDocumentFile(file *multipart.FileHeader) error {
 	// Check content type
 	contentType := file.Header.Get("Content-Type")
 	allowedTypes := map[string]bool{
-		"application/pdf":  true,
-		"image/jpeg":       true,
-		"image/jpg":        true,
-		"image/png":        true,
+		"application/pdf":    true,
+		"image/jpeg":         true,
+		"image/jpg":          true,
+		"image/png":          true,
 		"application/msword": true, // .doc
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true, // .docx
 	}
@@ -1183,7 +1214,6 @@ func validateDocumentFile(file *multipart.FileHeader) error {
 
 	return nil
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ERROR HELPERS

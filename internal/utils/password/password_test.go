@@ -9,6 +9,21 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// TestHashWithCost honors the configured bcrypt work factor.
+func TestHashWithCost(t *testing.T) {
+	hash, err := HashWithCost("SecurePassword123!", 12)
+	require.NoError(t, err)
+	cost, err := bcrypt.Cost([]byte(hash))
+	require.NoError(t, err)
+	assert.Equal(t, 12, cost)
+}
+
+func TestHashWithCostRejectsInvalidCost(t *testing.T) {
+	_, err := HashWithCost("SecurePassword123!", bcrypt.MaxCost+1)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "bcrypt cost")
+}
+
 // TestHash_Success verifies that Hash generates a valid bcrypt hash
 func TestHash_Success(t *testing.T) {
 	// Arrange
@@ -21,7 +36,7 @@ func TestHash_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, hash)
 	assert.Equal(t, 60, len(hash), "bcrypt hash should be exactly 60 characters")
-	assert.True(t, strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$"), 
+	assert.True(t, strings.HasPrefix(hash, "$2a$") || strings.HasPrefix(hash, "$2b$"),
 		"bcrypt hash should start with $2a$ or $2b$")
 }
 
@@ -143,8 +158,8 @@ func TestVerify_CaseSensitive(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name     string
-		attempt  string
+		name        string
+		attempt     string
 		shouldMatch bool
 	}{
 		{"exact match", "Password123", true},

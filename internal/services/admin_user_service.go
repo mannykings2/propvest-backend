@@ -221,7 +221,7 @@ func (s *adminUserService) ListUsers(ctx context.Context, actorID uuid.UUID, fil
 			TotalInvested:   totalInvested,
 			WalletBalance:   walletBalance,
 			CreatedAt:       user.CreatedAt,
-			LastLoginAt:     nil, // TODO: Add when login history is implemented
+			LastLoginAt:     user.LastLoginAt,
 		}
 	}
 
@@ -283,7 +283,7 @@ func (s *adminUserService) GetUserDetail(ctx context.Context, actorID, targetUse
 		WalletEarnings:    user.Wallet.EarningsBalance,
 		CreatedAt:         user.CreatedAt,
 		UpdatedAt:         user.UpdatedAt,
-		LastLoginAt:       nil, // TODO: Add when login history is implemented
+		LastLoginAt:       user.LastLoginAt,
 	}
 
 	// Add suspension details if suspended

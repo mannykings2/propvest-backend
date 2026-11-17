@@ -95,8 +95,8 @@ func TestValidate_EmailRules(t *testing.T) {
 	base := func() *Config {
 		return &Config{
 			DatabaseURL:      "postgres://localhost/x",
-			JWTSecret:        "0123456789abcdef",
-			JWTRefreshSecret: "fedcba9876543210",
+			JWTSecret:        "0123456789abcdef0123456789abcdef",
+			JWTRefreshSecret: "fedcba9876543210fedcba9876543210",
 			AccessTokenTTL:   "15m",
 			RefreshTokenTTL:  "720h",
 			BcryptCost:       12,

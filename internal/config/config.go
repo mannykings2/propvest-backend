@@ -108,18 +108,18 @@ type Config struct {
 	// Phase 6.4: both default to TRUE in production (setDefaults below) —
 	// a production deployment that forgets them gates investing behind
 	// verification instead of silently leaving it open. Explicit env wins.
-	RequireEmailVerification bool  `mapstructure:"REQUIRE_EMAIL_VERIFICATION"`
-	RequireKYCForInvestment  bool  `mapstructure:"REQUIRE_KYC_FOR_INVESTMENT"`
+	RequireEmailVerification bool `mapstructure:"REQUIRE_EMAIL_VERIFICATION"`
+	RequireKYCForInvestment  bool `mapstructure:"REQUIRE_KYC_FOR_INVESTMENT"`
 	// Phase 9.1 (NDPA): signup must record acceptance of the terms + privacy
 	// policy in production. Marketing consent is deliberately NOT enforced —
 	// bundling it would make the consent not "freely given".
-	RequireRegistrationConsent bool `mapstructure:"REQUIRE_REGISTRATION_CONSENT"`
-	MinInvestmentAmount      int64 `mapstructure:"MIN_INVESTMENT_AMOUNT"` // kobo
-	MaxInvestmentAmount      int64 `mapstructure:"MAX_INVESTMENT_AMOUNT"` // kobo
-	MinDepositAmount         int64 `mapstructure:"MIN_DEPOSIT_AMOUNT"`    // kobo
-	MaxDepositAmount         int64 `mapstructure:"MAX_DEPOSIT_AMOUNT"`    // kobo
-	MinWithdrawalAmount      int64 `mapstructure:"MIN_WITHDRAWAL_AMOUNT"` // kobo
-	MaxWithdrawalAmount      int64 `mapstructure:"MAX_WITHDRAWAL_AMOUNT"` // kobo
+	RequireRegistrationConsent bool  `mapstructure:"REQUIRE_REGISTRATION_CONSENT"`
+	MinInvestmentAmount        int64 `mapstructure:"MIN_INVESTMENT_AMOUNT"` // kobo
+	MaxInvestmentAmount        int64 `mapstructure:"MAX_INVESTMENT_AMOUNT"` // kobo
+	MinDepositAmount           int64 `mapstructure:"MIN_DEPOSIT_AMOUNT"`    // kobo
+	MaxDepositAmount           int64 `mapstructure:"MAX_DEPOSIT_AMOUNT"`    // kobo
+	MinWithdrawalAmount        int64 `mapstructure:"MIN_WITHDRAWAL_AMOUNT"` // kobo
+	MaxWithdrawalAmount        int64 `mapstructure:"MAX_WITHDRAWAL_AMOUNT"` // kobo
 }
 
 // Load reads the .env file (and OS env) and maps it into a Config struct.
@@ -252,11 +252,15 @@ func (c *Config) Validate() error {
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
-	if len(c.JWTSecret) < 16 {
-		return fmt.Errorf("JWT_SECRET must be set and at least 16 characters")
+	secretMinLength := 16
+	if c.IsProduction() {
+		secretMinLength = 32
 	}
-	if len(c.JWTRefreshSecret) < 16 {
-		return fmt.Errorf("JWT_REFRESH_SECRET must be set and at least 16 characters")
+	if len(c.JWTSecret) < secretMinLength {
+		return fmt.Errorf("JWT_SECRET must be at least %d characters", secretMinLength)
+	}
+	if len(c.JWTRefreshSecret) < secretMinLength {
+		return fmt.Errorf("JWT_REFRESH_SECRET must be at least %d characters", secretMinLength)
 	}
 	if _, err := time.ParseDuration(c.AccessTokenTTL); err != nil {
 		return fmt.Errorf("ACCESS_TOKEN_TTL is not a valid duration (e.g. 15m): %w", err)

@@ -111,6 +111,14 @@ func (m *MockUserRepository) List(ctx context.Context, filter repositories.UserF
 	return args.Get(0).([]*models.User), args.Get(1).(int64), args.Error(2)
 }
 
+func (m *MockUserRepository) ListForMessaging(ctx context.Context, filter repositories.UserFilter, limit int) ([]*models.User, error) {
+	args := m.Called(ctx, filter, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*models.User), args.Error(1)
+}
+
 func (m *MockUserRepository) FindByIDWithWalletAndInvestments(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
@@ -629,7 +637,7 @@ func TestRefreshAccessToken_Success(t *testing.T) {
 	// Generate a valid refresh token
 	userID := uuid.New()
 	refreshTokenTTL, _ := time.ParseDuration(svc.config.RefreshTokenTTL)
-	
+
 	// For this test, we'll skip actual JWT validation and focus on repository logic
 	// In real tests, you'd generate a proper JWT token
 
@@ -698,11 +706,11 @@ func TestRefreshAccessToken_TokenRevoked(t *testing.T) {
 	// Create a revoked token
 	now := time.Now()
 	dbToken := &models.RefreshToken{
-		ID:         uuid.New(),
-		UserID:     uuid.New(),
-		TokenHash:  "test-hash",
-		RevokedAt:  &now, // Token is revoked
-		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		ID:        uuid.New(),
+		UserID:    uuid.New(),
+		TokenHash: "test-hash",
+		RevokedAt: &now, // Token is revoked
+		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 
 	req := dto.RefreshRequest{
@@ -805,7 +813,7 @@ func TestLogoutAllDevices_DatabaseError(t *testing.T) {
 func TestHashToken(t *testing.T) {
 	// Test that hash token is consistent and produces valid SHA-256 hashes
 	token := "test-token-12345"
-	
+
 	hash1 := hashToken(token)
 	hash2 := hashToken(token)
 

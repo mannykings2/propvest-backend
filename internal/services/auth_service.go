@@ -76,6 +76,10 @@ type AuthService interface {
 	// ResetPassword consumes a reset token, sets the new password, and revokes
 	// all of the user's sessions.
 	ResetPassword(ctx context.Context, token, newPassword string) error
+
+	// LoginHistory returns the user's most recent successful sign-ins
+	// (newest first) for the Profile "Recent sign-ins" section.
+	LoginHistory(ctx context.Context, userID uuid.UUID, limit int) ([]*models.LoginHistory, error)
 }
 
 // authService is the concrete implementation
@@ -85,6 +89,7 @@ type authService struct {
 	walletRepo       repositories.WalletRepository
 	refreshTokenRepo repositories.RefreshTokenRepository
 	tokenRepo        repositories.VerificationTokenRepository
+	loginHistoryRepo repositories.LoginHistoryRepository
 	mailer           mailer.Sender
 	audit            audit.Recorder
 	config           *config.Config
@@ -99,6 +104,7 @@ func NewAuthService(
 	walletRepo repositories.WalletRepository,
 	refreshTokenRepo repositories.RefreshTokenRepository,
 	tokenRepo repositories.VerificationTokenRepository,
+	loginHistoryRepo repositories.LoginHistoryRepository,
 	emailSender mailer.Sender,
 	auditRecorder audit.Recorder,
 	cfg *config.Config,
@@ -109,10 +115,44 @@ func NewAuthService(
 		walletRepo:       walletRepo,
 		refreshTokenRepo: refreshTokenRepo,
 		tokenRepo:        tokenRepo,
+		loginHistoryRepo: loginHistoryRepo,
 		mailer:           emailSender,
 		audit:            auditRecorder,
 		config:           cfg,
 		db:               db,
+	}
+}
+
+// LoginHistory returns the user's recent sign-ins (newest first).
+func (s *authService) LoginHistory(ctx context.Context, userID uuid.UUID, limit int) ([]*models.LoginHistory, error) {
+	if s.loginHistoryRepo == nil {
+		return nil, nil // unit tests construct the service without the repo
+	}
+	return s.loginHistoryRepo.ListByUser(ctx, userID, limit)
+}
+
+// recordLogin appends sign-in evidence and stamps users.last_login_at.
+//
+// Best-effort by design: losing telemetry must never fail a legitimate
+// sign-in (the refresh token was already stored best-effort above for the
+// same reason). A failure here is logged loudly, not swallowed silently.
+func (s *authService) recordLogin(ctx context.Context, userID uuid.UUID) {
+	if s.loginHistoryRepo == nil {
+		return
+	}
+	md := RequestMetadataFromContext(ctx)
+	entry := &models.LoginHistory{UserID: userID}
+	if md.IPAddress != "" {
+		entry.IPAddress = &md.IPAddress
+	}
+	if md.UserAgent != "" {
+		entry.UserAgent = &md.UserAgent
+	}
+	if md.RequestID != "" {
+		entry.RequestID = &md.RequestID
+	}
+	if err := s.loginHistoryRepo.Record(ctx, entry); err != nil {
+		logger.Error("login: failed to record login history", "user_id", userID, "error", err)
 	}
 }
 
@@ -151,18 +191,19 @@ func (s *authService) recordRegistrationConsents(ctx context.Context, tx *gorm.D
 // Register creates a new user account
 //
 // Process:
-//   1. Validate email format and uniqueness
-//   2. Validate phone format and uniqueness
-//   3. Enforce password complexity rules
-//   4. Hash password with bcrypt
-//   5. Create user and wallet in a transaction (atomic operation)
-//   6. Generate access token and refresh token
-//   7. Store hashed refresh token in database
+//  1. Validate email format and uniqueness
+//  2. Validate phone format and uniqueness
+//  3. Enforce password complexity rules
+//  4. Hash password with bcrypt
+//  5. Create user and wallet in a transaction (atomic operation)
+//  6. Generate access token and refresh token
+//  7. Store hashed refresh token in database
 //
 // Why transaction?
-//   Every user MUST have a wallet. If we create the user but wallet creation
-//   fails, we'd have an inconsistent state. Transaction ensures both succeed
-//   or both fail together.
+//
+//	Every user MUST have a wallet. If we create the user but wallet creation
+//	fails, we'd have an inconsistent state. Transaction ensures both succeed
+//	or both fail together.
 //
 // Security:
 //   - Password never stored plain (bcrypt with cost 10)
@@ -170,11 +211,12 @@ func (s *authService) recordRegistrationConsents(ctx context.Context, tx *gorm.D
 //   - Email verification token would be generated here (future milestone)
 //
 // Example usage in handler:
-//   response, err := authService.Register(ctx, registerRequest)
-//   if err != nil {
-//       return c.JSON(400, err)
-//   }
-//   return c.JSON(201, response)
+//
+//	response, err := authService.Register(ctx, registerRequest)
+//	if err != nil {
+//	    return c.JSON(400, err)
+//	}
+//	return c.JSON(201, response)
 func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*dto.RegisterResponse, error) {
 	// Step 1: Normalize and validate email
 	// Emails are case-insensitive, so "User@Example.COM" = "user@example.com"
@@ -234,7 +276,7 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 	// bcrypt.GenerateFromPassword is expensive (intentionally slow for security)
 	// Cost 10 = ~100ms on modern hardware
 	// This is why we check email existence first - no point hashing if email is taken
-	hashedPassword, err := password.Hash(req.Password)
+	hashedPassword, err := password.HashWithCost(req.Password, s.config.BcryptCost)
 	if err != nil {
 		// This should never fail unless password exceeds max length (100 chars)
 		// or system is out of memory
@@ -259,9 +301,9 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 			Phone:        phone,
 			FullName:     req.FullName,
 			PasswordHash: hashedPassword,
-			Role:         "investor",    // Default role (others assigned by admin)
-			KYCStatus:    "pending",     // Email verification required first
-			IsActive:     true,           // Account active immediately
+			Role:         "investor", // Default role (others assigned by admin)
+			KYCStatus:    "pending",  // Email verification required first
+			IsActive:     true,       // Account active immediately
 		}
 
 		// Insert user into database
@@ -353,6 +395,10 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 		logger.Error("register: failed to store refresh token", "user_id", user.ID, "error", err)
 	}
 
+	// Registration issues a session pair and immediately signs the user in,
+	// so record the sign-in just like the explicit login endpoint.
+	s.recordLogin(ctx, user.ID)
+
 	// Step 8b: Fire off the email-verification link (best-effort; a failure here
 	// must not fail registration — the user can request a resend).
 	s.issueVerificationEmail(ctx, user)
@@ -380,11 +426,11 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 // Login authenticates a user and issues tokens
 //
 // Process:
-//   1. Find user by email
-//   2. Check if account is active
-//   3. Verify password matches hash
-//   4. Generate access token and refresh token
-//   5. Store hashed refresh token
+//  1. Find user by email
+//  2. Check if account is active
+//  3. Verify password matches hash
+//  4. Generate access token and refresh token
+//  5. Store hashed refresh token
 //
 // Security:
 //   - Generic error message ("invalid email or password")
@@ -393,11 +439,12 @@ func (s *authService) Register(ctx context.Context, req dto.RegisterRequest) (*d
 //   - Rate limiting should be applied at handler/middleware level
 //
 // Example usage:
-//   response, err := authService.Login(ctx, loginRequest)
-//   if err != nil {
-//       return c.JSON(401, "Invalid credentials")
-//   }
-//   return c.JSON(200, response)
+//
+//	response, err := authService.Login(ctx, loginRequest)
+//	if err != nil {
+//	    return c.JSON(401, "Invalid credentials")
+//	}
+//	return c.JSON(200, response)
 func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.LoginResponse, error) {
 	// Step 1: Normalize email (case-insensitive lookup)
 	email := strings.ToLower(strings.TrimSpace(req.Email))
@@ -466,6 +513,10 @@ func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 		logger.Error("login: failed to store refresh token", "user_id", user.ID, "error", err)
 	}
 
+	// Step 6b: Record sign-in evidence (last_login_at + login_history row).
+	// Best-effort: telemetry must not block a legitimate sign-in.
+	s.recordLogin(ctx, user.ID)
+
 	// Step 7: Return response
 	return &dto.LoginResponse{
 		User: dto.UserResponse{
@@ -488,14 +539,14 @@ func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 // Implements token rotation for security
 //
 // Process:
-//   1. Validate refresh token JWT (signature + expiration)
-//   2. Extract user ID from token
-//   3. Hash token and look it up in database
-//   4. Check if token is revoked
-//   5. Revoke old refresh token (rotation step 1)
-//   6. Generate new access token
-//   7. Generate new refresh token (rotation step 2)
-//   8. Store new refresh token in database
+//  1. Validate refresh token JWT (signature + expiration)
+//  2. Extract user ID from token
+//  3. Hash token and look it up in database
+//  4. Check if token is revoked
+//  5. Revoke old refresh token (rotation step 1)
+//  6. Generate new access token
+//  7. Generate new refresh token (rotation step 2)
+//  8. Store new refresh token in database
 //
 // Token rotation security:
 //   - Old refresh token becomes invalid immediately
@@ -504,11 +555,12 @@ func (s *authService) Login(ctx context.Context, req dto.LoginRequest) (*dto.Log
 //   - This alerts user to potential breach
 //
 // Example usage:
-//   response, err := authService.RefreshAccessToken(ctx, refreshRequest)
-//   if err != nil {
-//       return c.JSON(401, "Invalid refresh token")
-//   }
-//   return c.JSON(200, response)
+//
+//	response, err := authService.RefreshAccessToken(ctx, refreshRequest)
+//	if err != nil {
+//	    return c.JSON(401, "Invalid refresh token")
+//	}
+//	return c.JSON(200, response)
 func (s *authService) RefreshAccessToken(ctx context.Context, req dto.RefreshRequest) (*dto.RefreshResponse, error) {
 	// Step 1: Validate JWT signature and expiration
 	// This checks:
@@ -618,9 +670,9 @@ func (s *authService) RefreshAccessToken(ctx context.Context, req dto.RefreshReq
 // This logs the user out from the current device only
 //
 // Process:
-//   1. Hash the refresh token
-//   2. Find in database
-//   3. Mark as revoked
+//  1. Hash the refresh token
+//  2. Find in database
+//  3. Mark as revoked
 //
 // After logout:
 //   - Refresh token can no longer be used to get new access tokens
@@ -628,11 +680,12 @@ func (s *authService) RefreshAccessToken(ctx context.Context, req dto.RefreshReq
 //   - Client should discard both tokens locally
 //
 // Example usage:
-//   err := authService.Logout(ctx, refreshToken)
-//   if err != nil {
-//       return c.JSON(500, "Logout failed")
-//   }
-//   return c.JSON(200, "Logged out successfully")
+//
+//	err := authService.Logout(ctx, refreshToken)
+//	if err != nil {
+//	    return c.JSON(500, "Logout failed")
+//	}
+//	return c.JSON(200, "Logged out successfully")
 func (s *authService) Logout(ctx context.Context, refreshToken string) error {
 	// Hash token for database lookup
 	tokenHash := hashToken(refreshToken)
@@ -660,8 +713,8 @@ func (s *authService) Logout(ctx context.Context, refreshToken string) error {
 //   - User clicks "Logout from all devices" button
 //
 // Process:
-//   1. Find all user's tokens
-//   2. Mark all as revoked
+//  1. Find all user's tokens
+//  2. Mark all as revoked
 //
 // After logout all:
 //   - User must login again on EVERY device
@@ -669,11 +722,12 @@ func (s *authService) Logout(ctx context.Context, refreshToken string) error {
 //   - All refresh tokens are unusable
 //
 // Example usage (password change):
-//   // Update password
-//   user.PasswordHash = newHash
-//   db.Save(&user)
-//   // Force re-login everywhere
-//   authService.LogoutAllDevices(ctx, user.ID)
+//
+//	// Update password
+//	user.PasswordHash = newHash
+//	db.Save(&user)
+//	// Force re-login everywhere
+//	authService.LogoutAllDevices(ctx, user.ID)
 func (s *authService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) error {
 	// Revoke all user's refresh tokens
 	// This is a batch update: UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ?
@@ -695,9 +749,10 @@ func (s *authService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) er
 // hashToken creates a SHA-256 hash of a token for database storage
 //
 // Why hash tokens?
-//   If an attacker gains read-access to the database (SQL injection, backup leak, etc.),
-//   they still can't use the refresh tokens because they only have the hashes.
-//   They would need to guess the original token (2^256 possibilities).
+//
+//	If an attacker gains read-access to the database (SQL injection, backup leak, etc.),
+//	they still can't use the refresh tokens because they only have the hashes.
+//	They would need to guess the original token (2^256 possibilities).
 //
 // Why SHA-256 instead of bcrypt?
 //   - bcrypt is for passwords (needs to be slow to resist brute-force)
@@ -705,10 +760,11 @@ func (s *authService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) er
 //   - SHA-256 is fast for lookups while still providing security
 //
 // Process:
-//   Input: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi..."
-//   SHA-256: [32 bytes of binary hash]
-//   Hex encode: "3f8a5c2d9e1b4f7c8a6d3e9f1b5c8a2d..."
-//   Store: "3f8a5c2d9e1b4f7c8a6d3e9f1b5c8a2d..."
+//
+//	Input: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoi..."
+//	SHA-256: [32 bytes of binary hash]
+//	Hex encode: "3f8a5c2d9e1b4f7c8a6d3e9f1b5c8a2d..."
+//	Store: "3f8a5c2d9e1b4f7c8a6d3e9f1b5c8a2d..."
 func hashToken(token string) string {
 	// sha256.New() creates a new hash instance
 	hash := sha256.New()
@@ -900,7 +956,7 @@ func (s *authService) ResetPassword(ctx context.Context, tokenStr, newPassword s
 		return err
 	}
 
-	hashed, err := password.Hash(newPassword)
+	hashed, err := password.HashWithCost(newPassword, s.config.BcryptCost)
 	if err != nil {
 		return errors.ErrInternalServer
 	}

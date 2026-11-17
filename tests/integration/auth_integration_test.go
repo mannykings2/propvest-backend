@@ -46,6 +46,7 @@ func TestRegistrationCreatesWalletAtomically(t *testing.T) {
 		walletRepo,
 		refreshTokenRepo,
 		verificationTokenRepo,
+		repositories.NewLoginHistoryRepository(testDB.DB),
 		&mailer.MockSender{}, // Register always sends a verification email
 		auditRecorder,
 		testDB.Config,
@@ -143,6 +144,7 @@ func TestLoginWithValidCredentials(t *testing.T) {
 		walletRepo,
 		refreshTokenRepo,
 		verificationTokenRepo,
+		repositories.NewLoginHistoryRepository(testDB.DB),
 		&mailer.MockSender{},
 		auditRecorder,
 		testDB.Config,
@@ -222,6 +224,7 @@ func TestLoginWithInvalidPassword(t *testing.T) {
 		walletRepo,
 		refreshTokenRepo,
 		verificationTokenRepo,
+		repositories.NewLoginHistoryRepository(testDB.DB),
 		&mailer.MockSender{},
 		auditRecorder,
 		testDB.Config,
